@@ -1,0 +1,483 @@
+---
+title: "02 Datasets"
+author: "JW"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+```{r SetWorkingDirectory}
+# Get working directory
+wd = here::here()
+pd = dirname(wd)
+pjd = rstudioapi::getActiveProject()
+```
+
+```{r Helpers}
+# Source helper functions
+source(here::here("R/helpers.R"))
+```
+
+## Datensatzvorbereitung
+
+Auf dem in "01insight.R" erstellten Grundstock von Daten aufbauend,
+lassen sich weitere Prädiktoren und Zielvariablen für mögliche Modelle ableiten.
+Dadurch ergibt sich potentiell eine Vielzahl an Modelldatensätzen.
+
+Dies stellt bereits einen Schritt der Modellbildung dar und wird daher in diesem 
+Zwischenschritt zwischen der Datenexploration in "01insight.R" 
+und der ab 03 folgenden Modellbildung durchgeführt.
+
+```{r Fetch data}
+# Datenbank
+db = RSQLite::dbConnect(
+  RSQLite::SQLite(), 
+  here::here(pd, "01insight/output/basedata.db")
+)
+# Einlesen des Basisdatensatzes
+basedata = RSQLite::dbReadTable(db, "basedata")
+```
+
+## Datensatz 1 - Referenz ('dataset1')
+
+Der erste Datensatz stellt nur eine geringe Veränderung zum Basisdatensatz dar.
+Es werden lediglich eine Namensspalte *schaden* und eine Spalte *alter* hinzugefügt.
+
+  - *schaden* = f(ort, baujahr, tbwnr, schad_id) {paste(., collapse = '_')}
+  - *alter* = f(prufjahr, baujahr) {pufjahr- baujahr}
+  
+Bis auf die Zielvariable *bewert_d* werden alle anderen gelöscht.
+
+```{r dataset1}
+dataset1 = basedata |> 
+  tidyr::unite(
+    "schaden", ort, baujahr, tbwnr, schad_id, schaden, sep = "_", remove = FALSE) |> 
+  dplyr::mutate(alter = prufjahr - baujahr) |> 
+  dplyr::select(
+    -zustandsnote, -zustandsnotenklasse, -substanzkennzahl, -bewert_s, -bewert_v, 
+    -max_s, -max_v, -max_d
+  )
+
+# Speichern
+# save_dataset(dataset1, here::here("output/dataset1.db"))
+```
+
+## Datensatz 2 - Historie ('dataset2')
+
+Datensatz 2 baut auf dem ersten Datensatz auf.
+Es werden drei Spalten ergänzt:
+
+  - *bewert_d_h3* = f(bewert_d, prufjahr) Bewertung bewert_d vor 3 Jahren
+  - *bewert_d_h6* = f(bewert_d, prufjahr) Bewertung bewert_d vor 6 Jahren
+  - *bewert_d_h9* = f(bewert_d, prufjahr) Bewertung bewert_d vor 9 Jahren
+
+```{r Dataset2}
+interp_2 = dataset1 |> 
+  # Erst Duplikate in Prüfjahren durch Mittelwerte ersetzen
+  dplyr::group_by(schaden, prufjahr) |> 
+  dplyr::mutate(bewert_d_mean = mean(bewert_d, na.rm = TRUE)) |> 
+  dplyr::distinct(schaden, prufjahr, .keep_all = TRUE) |> 
+  # Dann innerhalb der Gruppen für dts interpolieren
+  dplyr::group_by(schaden) |> 
+  dplyr::group_modify(~ {
+    dts = c(3, 6, 9)
+    if (sum(!is.na(.x$bewert_d)) >= 2) {
+      for (dt in dts) {
+        .x[[paste0("bewert_d_h", dt)]] = round(
+          approx(
+            x = .x$prufjahr,
+            y = .x$bewert_d_mean,
+            xout = .x$prufjahr - dt,
+            rule = 1
+          )$y,
+          0
+        )
+      }
+    } else {
+      for (dt in dts) {
+        .x[, paste0("bewert_d_h", dt)] = NA
+      }
+    }
+    .x
+  }) |> 
+  dplyr::select(-bewert_d_mean) |> 
+  dplyr::ungroup()
+
+interp_2 = interp_2 |> 
+  dplyr::select(
+    c("schaden", "prufjahr", setdiff(colnames(interp_2), colnames(dataset1)))
+  )
+
+dataset2 = dataset1 |>
+  dplyr::left_join(interp_2, by = c("schaden", "prufjahr"))
+
+# Speichern
+save_dataset(dataset2, here::here("output/dataset2.db"))
+```
+
+## Datensatz 3 - Relative Historie ('dataset3')
+
+Datensatz drei baut auf dem ersten Datensatz auf.
+Es werden 4 Spalten ergänzt:
+
+  - *bewert_d_ha* = f(*bewert_d*, *prufjahr*) Bewertung bewert_d zum Anfang des
+  Beobachtungszeitraums
+  - *bewert_d_hm* = f(*bewert_d*, *prufjahr*) Bewertung bewert_d in der Mitte des
+  Beobachtungszeitraums
+  - *bewert_d_he* = f(*bewert_d*, *prufjahr*) Bewertung bewert_d gegen Ende des
+  Beobachtungszeitraums
+  - *inspektionszeitanteil* = f(*prufjahr*) Anteil jeweilgen Prüfzeitraumes am Brückenalter
+  
+Anfangs-, Mittel- und Endzeitpunkt stellen Drittelpunkte des Beobachtungszeitraumes dar.
+
+Die Variable *inspektionszeitanteil* könnte zur Gewichtung genutzt werden (case.weights?).
+
+```{r dataset3}
+interp_3 = dataset1 |>
+  # Erst Duplikate in Prüfjahren durch Mittelwerte ersetzen
+  dplyr::group_by(schaden, prufjahr) |>
+  dplyr::mutate(bewert_d_mean = mean(bewert_d, na.rm = TRUE)) |>
+  dplyr::distinct(schaden, prufjahr, .keep_all = TRUE) |>
+
+  dplyr::mutate(
+    bewert_d_ha = NA_real_,
+    bewert_d_hm = NA_real_,
+    bewert_d_he = NA_real_
+  ) |>
+
+  # Dann innerhalb der Gruppen für dts interpolieren
+  dplyr::group_by(schaden) |>
+  dplyr::group_modify(~ {
+
+    for (i in 1:nrow(.x)) {
+      if (i == 1) {
+        .x[i, c("bewert_d_ha","bewert_d_hm","bewert_d_he")] <- round(.x$bewert_d_mean[1], 0)
+      } else {
+
+        min_j <- .x$prufjahr[1]
+        max_j <- .x$prufjahr[i]
+
+        xout_ha <- min_j + 0/3 * (max_j - min_j)
+        xout_hm <- min_j + 1/3 * (max_j - min_j)
+        xout_he <- min_j + 2/3 * (max_j - min_j)
+
+        y_vals <- .x$bewert_d_mean[1:i]
+
+        .x$bewert_d_ha[i] = round(approx(.x$prufjahr[1:i], y_vals, xout=xout_ha)$y,0)
+        .x$bewert_d_hm[i] = round(approx(.x$prufjahr[1:i], y_vals, xout=xout_hm)$y,0)
+        .x$bewert_d_he[i] = round(approx(.x$prufjahr[1:i], y_vals, xout=xout_he)$y,0)
+
+      }
+    }
+
+    return(.x)
+
+  }) |>
+  # Anteil der Inspektionszeit am Brückenalter
+  dplyr::mutate(inspektionszeitanteil = (prufjahr - min(prufjahr))/alter) |>
+  # Finish up
+  dplyr::select(-bewert_d_mean) |>
+  dplyr::ungroup()
+
+interp_3 = interp_3 |> 
+  dplyr::select(
+    c("schaden", "prufjahr", setdiff(colnames(interp_3), colnames(dataset1)))
+  )
+
+dataset3 = dataset1 |>
+  dplyr::left_join(interp_3, by = c("schaden", "prufjahr"))
+
+save_dataset(dataset3, here::here("output/dataset3.db"))
+```
+
+#### Datensatz 3_1 ('dataset3_1')
+
+Dieser Datensatz stellt eine Modifikation von Datensatz 3 dar. Statt der 
+historischen Werte ha, hm und he und einer zusätzlichen Gewichtungsspalte 
+*inspektionszeitanteil* werden ha, hm und he mit dieser multipliziert. Die 
+Spalte *inspektionszeitanteil* selbst wird entfernt.
+
+```{r dataset3_1}
+dataset3_1 = dataset3 |>
+  dplyr::mutate(bewert_d_ha = bewert_d_ha * inspektionszeitanteil) |> 
+  dplyr::mutate(bewert_d_hm = bewert_d_hm * inspektionszeitanteil) |> 
+  dplyr::mutate(bewert_d_he = bewert_d_he * inspektionszeitanteil) |> 
+  dplyr::select(-inspektionszeitanteil)
+
+save_dataset(dataset3_1, here::here("output/dataset3_1.db"))
+```
+
+#### Datensatz 3_2 ('dataset3_2')
+
+Dieser Datensatz stellt eine Modifikation von Datensatz 3 dar. Statt der 
+historischen Werte ha, hm und he und einer zusätzlichen Gewichtungsspalte 
+*inspektionszeitanteil* werden ha, hm und he mit dem Quadrat dieser 
+multipliziert. Damit sollen Einträge mit einem vergleichsweise großen 
+Inspektionszeitanteil stärker gewichtet werden. Die Spalte 
+*inspektionszeitanteil* selbst wird entfernt.
+
+```{r dataset3_2}
+dataset3_2 = dataset3 |>
+  dplyr::mutate(bewert_d_ha = bewert_d_ha * inspektionszeitanteil**2) |> 
+  dplyr::mutate(bewert_d_hm = bewert_d_hm * inspektionszeitanteil**2) |> 
+  dplyr::mutate(bewert_d_he = bewert_d_he * inspektionszeitanteil**2) |> 
+  dplyr::select(-inspektionszeitanteil)
+
+save_dataset(dataset3_2, here::here("output/dataset3_2.db"))
+```
+
+## Dataset 4 - Klimadaten
+
+Die Klimadaten wurden innerhalb des 01insight-Projektes bezogen und als nested 
+data.table im .rds-Format gespeichert.
+Aus  diesen Daten werden für die Zeilen Kennwerte wie die historisch maximale 
+Temperatur (max_maxT) oder die mittlere höchste Temperatur (mean_maxT) etc.
+zusammengefasst.
+
+```{r Dataset4}
+# Read data from other project
+climate_data_nested = readRDS("../01insight/data/dwd/climate_data_nested.rds") |> 
+  data.table::as.data.table()
+
+# Unnest
+data.table::data.table(climate_data_nested)[
+  ,
+  `:=`(
+    mean_maxT = sapply(data, function(df) mean(df$maxT, na.rm = TRUE)),
+    mean_minT = sapply(data, function(df) mean(df$minT, na.rm = TRUE)),
+    mean_diffT = sapply(data, function(df) mean(df$diffT, na.rm = TRUE)),
+    mean_meanT = sapply(data, function(df) mean(df$meanT, na.rm = TRUE)),
+
+    max_maxT = sapply(data, function(df) max(df$maxT, na.rm = TRUE)),
+    min_minT = sapply(data, function(df) min(df$minT, na.rm = TRUE)),
+
+    mean_TFC = sapply(data, function(df) mean(df$TFC, na.rm = TRUE)),
+    mean_snowcoverdays = sapply(data, function(df) mean(df$snowcoverdays, na.rm = TRUE)),
+    mean_icedays = sapply(data, function(df) mean(df$icedays, na.rm = TRUE)),
+    mean_summerdays = sapply(data, function(df) mean(df$summerdays, na.rm = TRUE))
+  )
+][, c("Bruecke", "data") := NULL][] -> climate_data_table
+
+# Cast to data.frame
+dataset4 = data.frame(climate_data_table) |> 
+  dplyr::mutate(across(where(is.numeric),~ replace(., !is.finite(.), NA)))
+
+save_dataset(dataset4, here::here("output/dataset4.db"))
+```
+
+#### Datensatz 4_1 ('dataset4_1')
+
+Wie folgende Grafik zeigt korrelieren die Höhenangaben und Klimadaten 
+untereinander mehr oder weniger.
+
+```{r Dataset4_1.1}
+# Klimavariablen
+clim_vars = c(
+  "mean_maxT","mean_minT","mean_diffT","mean_meanT", "max_maxT", "min_minT", 
+  "mean_TFC", "mean_snowcoverdays", "mean_icedays", "mean_summerdays"
+)
+
+# Korrelationsmatrix
+GGally::ggpairs(dataset4[
+  sample(nrow(dataset4), 500),
+  c(clim_vars, "dgm1000_utm32s")
+])
+```
+
+Letztere werden aus diesem Grund in diesem Datensatz durch zwei Hauptkomponenten 
+ersetzt.
+
+```{r Dataset4_1.2}
+# Hauptkomponentenanalyse
+pca_res = dataset4 |>
+  dplyr::select(all_of(clim_vars)) |>
+  dplyr::filter(if_all(everything(), ~ !is.na(.))) |>
+  stats::prcomp(scale. = TRUE)
+
+pcs = predict(pca_res, newdata = dataset4[, clim_vars])
+
+# Skree
+
+# Replace
+pc12 <- as.data.frame(pcs[, 1:2])
+colnames(pc12) <- c("clim_PC1", "clim_PC2")
+
+dataset4_1 = dataset4 |>
+  dplyr::bind_cols(pc12) |>
+  dplyr::select(-all_of(clim_vars))
+
+save_dataset(dataset4_1, here::here("output/dataset4_1.db"))
+```
+
+#### Datensatz 4_2 ('dataset4_2')
+
+```{r Dataset4_2}
+# Crop time of interest
+cropped = climate_data_nested[, data := Map(function(dt, s, e) {
+  if (nrow(dt) == 0) return(dt)
+  dt[dt$Year >= s & dt$Year <= e, , drop = FALSE]
+}, data, baujahr, prufjahr)]
+
+# Unnest
+cropped[
+  ,
+  `:=`(
+    mean_maxT = sapply(data, function(df) mean(df$maxT, na.rm = TRUE)),
+    mean_minT = sapply(data, function(df) mean(df$minT, na.rm = TRUE)),
+    mean_diffT = sapply(data, function(df) mean(df$diffT, na.rm = TRUE)),
+    mean_meanT = sapply(data, function(df) mean(df$meanT, na.rm = TRUE)),
+
+    max_maxT = sapply(data, function(df) max(df$maxT, na.rm = TRUE)),
+    min_minT = sapply(data, function(df) min(df$minT, na.rm = TRUE)),
+
+    mean_TFC = sapply(data, function(df) mean(df$TFC, na.rm = TRUE)),
+    mean_snowcoverdays = sapply(data, function(df) mean(df$snowcoverdays, na.rm = TRUE)),
+    mean_icedays = sapply(data, function(df) mean(df$icedays, na.rm = TRUE)),
+    mean_summerdays = sapply(data, function(df) mean(df$summerdays, na.rm = TRUE))
+  )
+][, c("Bruecke", "data") := NULL][] -> climate_data_table_2
+
+# Cast to data.frame
+dataset4_2 = data.frame(climate_data_table_2) |> 
+  dplyr::mutate(across(where(is.numeric),~ replace(., !is.finite(.), NA)))
+
+save_dataset(dataset4_2, here::here("output/dataset4_2.db"))
+```
+
+## Datensatz 5 - Alle Prädiktoren
+
+Basierend auf den bisherigen Datensätzen wird ein Gesamtdatensatz mit allen 
+Prädiktoren erstellt.
+
+```{r}
+# Fetch all datasets
+dataset_path = "output/"
+dataset_files_all = list.files(dataset_path, full.names = TRUE)
+dataset_files = dataset_files_all[endsWith(dataset_files_all, ".db")]
+
+# Get all available columns per dataset
+columns = lapply(dataset_files, function(db) {
+  con = DBI::dbConnect(RSQLite::SQLite(), db)
+  tab = DBI::dbListTables(con)[1]
+  info = DBI::dbGetQuery(con, paste0("PRAGMA table_info(", tab, ");"))
+  DBI::dbDisconnect(con)
+  return(info$name)
+})
+
+# Query first occurrence
+l = lapply(unique(unlist(columns)), function(cn) {
+  ds = which(sapply(columns, function(c) {cn %in% c}))[1]
+  con = DBI::dbConnect(RSQLite::SQLite(), dataset_files[ds])
+  tab = DBI::dbListTables(con)[1]
+  col = DBI::dbGetQuery(con, paste0('SELECT "', cn, '" FROM "', tab, '";'))
+  return(col)
+})
+
+# Cbind columns
+dataset5 = do.call(cbind, l) |> 
+  dplyr::mutate(across(where(is.numeric),~ replace(., !is.finite(.), NA))) |> 
+  dplyr::mutate(across(where(is.character), as.factor))
+
+# Save dataset
+save_dataset(dataset = dataset5, name = "output/dataset5.db")
+```
+
+#### Datensatz 5_1 ('dataset5_1')
+
+Basierend auf den Ergebnissen des 05featureselection-Projektes wird Datensatz 5
+auf die mittels Recursive Feature Elimination ermittelten als 20 wichtigsten 
+Prädiktren Reduziert.
+
+```{r}
+top20 = c(
+  "alter", "baujahr", "bautlgrupp", "bauwerksart_text", "bewert_d_h3", 
+  "bewert_d_h6", "bewert_d_h9", "bewert_d_ha", "bewert_d_he", "bewert_d_hm",
+  "br_bauwerkswinkel", "br_bw_winkel_richtung", "br_maximale_laengsneigung", 
+  "breite", "clim_PC1", "clim_PC2", "dgm1000_utm32s", "feld", "flaeche", "hoch"
+)
+
+dataset5_1 = dataset5 |> 
+  dplyr::select(dplyr::all_of(top20))
+
+save_dataset(dataset = dataset5_1, name = "output/dataset5_1.db")
+```
+
+## Datensatz ...  - Änderung bewert_d 
+
+```{r dataset...}
+# dataset... = dataset... |> 
+#   dplyr::group_by(schaden) |>
+#   dplyr::arrange(prufjahr, .by_group = TRUE) |>
+#   dplyr::mutate(
+#     dbewert_d = bewert_d - dplyr::lag(bewert_d),
+#     dbewert_d = tidyr::replace_na(dbewert_d, 0)
+#     ) |>
+#   dplyr::ungroup() |> 
+#   dplyr::select(-bewert_d)
+# 
+# # Speichern
+# save_dataset(dataset..., here::here("output/dataset....db"))
+```
+
+## Datensatz X - Nur Trends ('datasetX')
+
+Datensatz X baut auf dem siebten Datensatz auf.
+Es werden sämtliche Schäden mit zeitlich konstantem *bewert_d* aussortiert.
+Dies könnte die Unausgewogenheit von *bewert_d* reduzieren.
+
+```{r datasetX}
+datasetX = dataset5 |>
+  dplyr::group_by(schaden) |> 
+  dplyr::filter(dplyr::n_distinct(bewert_d) > 1) |> 
+  dplyr::ungroup()
+
+save_dataset(datasetX, here::here("output/datasetX.db"))
+```
+
+#### Datensatz X_1 ('datasetX_1')
+
+Datensatz X_1 baut auf dem X-Datensatz auf.
+Es werden zusätzlich zu den bereits entfernten Schäden mit konstanten Einträgen
+von *bewert_d* auch die Schäden entfernt, die im Verlauf eine Verbesserung der 
+Bewertung von *bewert_d* erfahren.
+Untersucht werden soll nur eine Verschlechterung der Bewertung.
+
+```{r datasetX_1}
+datasetX_1 = datasetX |>
+  dplyr::group_by(schaden) |>
+  dplyr::arrange(prufjahr, .by_group = TRUE) |>
+  dplyr::mutate(
+    dbewert_d = bewert_d - dplyr::lag(bewert_d),
+    dbewert_d = tidyr::replace_na(dbewert_d, 0)
+  ) |>
+  dplyr::filter(all(dbewert_d >= 0)) |> 
+  dplyr::select(-dbewert_d) |> 
+  dplyr::ungroup()
+
+save_dataset(datasetX_1, here::here("output/datasetX_1.db"))
+```
+
+## Dataset Y ('datasetY')
+
+```{r datasetY}
+# ...
+```
+
+## Datensatz Z ('datasetZ')
+
+```{r datasetZ}
+# ...
+```
+
+## Finish
+
+```{r DisconnectDB}
+# Disconnect from database
+DBI::dbDisconnect(db)
+```
+

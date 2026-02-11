@@ -1,0 +1,115 @@
+############################
+# BASIC ONES
+############################
+
+figs/
+literarur/
+
+**/data/
+
+**.html
+
+README.md
+DATA.md
+data_analysis.py
+data_editing.py
+
+
+############################
+# OS / Editor
+############################
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+.vscode/
+.idea/
+
+############################
+# Python
+############################
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+
+############################
+# R / RStudio
+############################
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+*.Rproj.user
+*.Rcheck/
+
+############################
+# renv
+############################
+renv/library/
+renv/staging/
+renv/python/
+renv/cache/
+
+############################
+# Datenformate (groß / reproduzierbar)
+############################
+*.rds
+*.RData
+*.csv
+*.nc
+*.asc
+*.xyz
+*.db
+*.sqlite
+*.sqlite3
+
+############################
+# Logs
+############################
+*.log
+
+############################
+# Output / Ergebnisse
+############################
+output/
+*/output/
+*/figs/
+*/html/
+
+############################
+# Modelle & Trainingsartefakte
+############################
+*/models/
+*/RFModels_*/
+*/rf*_20*/
+
+############################
+# R Markdown Caches
+############################
+*_cache/
+*_files/
+cache/
+featureselection_cache/
+
+############################
+# Grafiken (falls reproduzierbar)
+############################
+*.png
+*.svg
+*.pdf
+
+############################
+# Docker
+############################
+**/.dockerignore
+
+############################
+# Temporäre Dateien
+############################
+*.tmp
+*.bak
+*.old

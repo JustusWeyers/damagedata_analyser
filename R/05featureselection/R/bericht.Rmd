@@ -1,0 +1,48 @@
+---
+title: "Bericht"
+author: "JW"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r ReadRFEResults}
+output_files = list.files("../output/", full.names = TRUE)
+rds_files = output_files[endsWith(output_files, ".rds")]
+names = tools::file_path_sans_ext(basename(rds_files))
+
+rfe_results = setNames(lapply(rds_files, readRDS), names)
+```
+
+```{r DisplayRFEResults}
+optimal_vars = sapply(rfe_results, function(res) res$optVariables) |>
+  tibble::enframe(name = "name", value = "var") |>
+  tidyr::unnest(var) |>
+  dplyr::mutate(name = gsub("rfe_", "", name)) |>
+  tidyr::separate(
+    name,
+    into = c("class1", "detail"),
+    sep = "-",
+    fill = "right",
+    extra = "merge"
+  )
+
+optimal_vars |>
+  dplyr::count(var, class1) |>
+  ggplot2::ggplot() +
+  ggplot2::geom_col(ggplot2::aes(x = forcats::fct_rev(var), y = n, fill = class1)) +
+  ggplot2::scale_y_continuous(
+    breaks = scales::breaks_width(2)
+  ) +
+  ggplot2::labs(
+    x = "Variable",
+    y = "Häufigkeit",
+    fill = "Gruppe"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::coord_flip()
+
+# df = optimal_vars |>
+#   dplyr::count(var, class1)
+# 
+# names(table(df$var))
+```

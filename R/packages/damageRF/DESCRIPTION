@@ -1,0 +1,38 @@
+Type: Package
+Package: damageRF
+Title: What the Package Does (Title Case)
+Version: 0.1.0
+Authors@R: 
+    person("Jane", "Doe", , "jane@example.com", role = c("aut", "cre"))
+Description: More about what it does (maybe more than one line).
+    Continuation lines should be indented.
+License: MIT + file LICENSE
+Depends: 
+    R (>= 3.5)
+Imports: 
+    cowplot,
+    DescTools,
+    dplyr,
+    fs,
+    ggplot2,
+    ggplotify,
+    ggpubr,
+    grid,
+    igraph,
+    methods,
+    parsnip,
+    patchwork,
+    pkgnet,
+    purrr,
+    recipes,
+    rsample,
+    stats,
+    tidyr,
+    tune,
+    utils,
+    vip,
+    workflows,
+    yardstick
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.3.3

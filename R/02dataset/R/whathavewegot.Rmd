@@ -1,0 +1,52 @@
+---
+title: "What Have We Got"
+author: "JW"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+```{r SetWorkingDirectory}
+# Get working directory
+wd = here::here()
+pd = dirname(wd)
+pjd = rstudioapi::getActiveProject()
+```
+
+```{r Helpers}
+# Source helper functions
+source(here::here("R/helpers.R"))
+```
+
+## Datensatzvorbereitung
+
+```{r Fetch data}
+# Datenbank
+db = RSQLite::dbConnect(
+  RSQLite::SQLite(), 
+  here::here(pd, "01insight/output/basedata.db")
+)
+# Einlesen des Basisdatensatzes
+basedata = RSQLite::dbReadTable(db, "basedata")
+```
+
+```{r}
+ggplot2::ggplot(basedata, ggplot2::aes(x = bewert_d)) +
+  ggplot2::geom_bar() +
+  ggplot2::geom_text(
+    stat = "count",
+    ggplot2::aes(label = ggplot2::after_stat(count)),
+    vjust = -0.3,
+    cex = 2.0
+  ) +
+  ggplot2::facet_wrap(~ bsp_id) +
+  ggplot2::theme_minimal() +
+  ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = c(0, 0.1)))
+```
+
+

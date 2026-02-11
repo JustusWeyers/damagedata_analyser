@@ -1,0 +1,156 @@
+---
+title: "Random Forest Training Report"
+author: "JW"
+date: "`r Sys.Date()`"
+output: pdf_document
+header-includes:
+  - \usepackage{fvextra}
+  - \RecustomVerbatimEnvironment{verbatim}{Verbatim}{breaklines=true}
+  - \usepackage{pdfpages}
+---
+
+```{r Helpers, echo=FALSE}
+source("helpers.R")
+```
+
+```{r Dir, echo = FALSE}
+data_path = ""
+```
+
+```{r Import, echo=FALSE}
+params = readRDS(
+  paste0(data_path, "training_characteristics.rds")
+)
+
+metrics_df = dplyr::bind_rows(params$metrics, .id = "bsp_id", ) |> 
+  tidyr::separate(bsp_id, into = c("class1","class2","class3"), sep = "-", fill = "right", remove = FALSE)
+```
+
+\newpage
+
+## Settion info
+
+```{r Settioninfo, echo=FALSE, results='asis', tidy=FALSE}
+si <- capture.output(params$session_info)
+cat(strwrap(si, width = 90), sep = "\n")
+```
+
+\newpage
+
+## Training characteristics
+
+Dataset: `r params$dataset`
+
+Start: `r params$start`
+
+End: `r params$end`
+
+Directories:
+
+```{r Directories, echo=FALSE}
+data.frame(
+  name = c("Working directory", "Data directory", "Output directory", "Dataset output directory"),
+  dir = c(params$wd, params$data_dir, params$output_dir, params$dataset_out_dir)
+) |> 
+  knitr::kable(col.names = c("", ""), booktabs = TRUE) |>   
+  kableExtra::kable_styling(position = "left")
+```
+
+\newpage
+
+\section*{True Positive Rate}
+
+The True Positive Rate (TPR), also called \emph{sensitivity}, measures how well a test identifies actual cases. It is calculated as the proportion of \emph{true positives} ($TP$) among all actual positive cases, i.e., \emph{true positives} plus \emph{false negatives} ($FN$):
+
+\[
+\text{TPR} = \frac{TP}{TP + FN}
+\]
+
+A high TPR means nearly all sick individuals are correctly detected, while a low TPR shows many cases are missed.
+
+```{r True positive rate, echo=FALSE, fig.height=7}
+metric_plot(
+  m = metrics_df[,c("class", "n", "P", "TPR", "bsp_id", "class1")],
+  metric_title = "True positive rate (TPR)",
+  metric_shrt = "TPR [-]"
+)
+```
+
+\newpage
+
+\section*{Positive Predictive Value}
+
+The Positive Predictive Value (PPV) indicates how likely it is that a person actually has a disease when the test result is positive. It is calculated as the proportion of \emph{true positives} ($TP$) among all positive test results, i.e., \emph{true positives} plus \emph{false positives} ($FP$):
+
+\[
+\text{PPV} = \frac{TP}{TP + FP}
+\]
+
+A high PPV means positive results are mostly correct, while a low PPV indicates many positives may be false.
+
+```{r Positive predictive value, echo=FALSE, fig.height=7}
+metric_plot(
+  m = metrics_df[,c("class", "n", "P", "PPV", "bsp_id", "class1")],
+  metric_title = "Positive predictive value (PPV)",
+  metric_shrt = "PPV [-]"
+)
+```
+
+\newpage
+
+\section*{Accuracy}
+
+Accuracy is a metric used in classification to measure the proportion of correctly predicted instances. It indicates how often a model’s predictions match the true labels. For a dataset with \(N\) samples, where \(TP\) = true positives, \(TN\) = true negatives, \(FP\) = false positives, and \(FN\) = false negatives, accuracy is:
+
+\[
+\text{Accuracy} = \frac{TP + TN}{TP + TN + FP + FN}
+\]
+
+It ranges from 0 to 1, with 1 being perfect prediction. While intuitive, accuracy can be misleading for imbalanced datasets.
+
+
+```{r Accuracy, echo=FALSE, fig.height=7}
+metric_plot(
+  m = metrics_df[,c("class", "n", "P", "accuracy", "bsp_id", "class1")],
+  metric_title = "Accuracy",
+  metric_shrt = "Accuracy [-]"
+)
+```
+
+\newpage
+
+```{r, fig.width = 14, fig.height = 5, out.width = "\\textwidth"}
+# Fetch RF .rds-files
+files = list.files(data_path)
+rf_files = startsWith(files, "rf_") & endsWith(files, ".rds")
+rf_files = list.files(data_path, full.names = TRUE)[rf_files]
+
+n = 5 # length(rf_files)
+```
+
+```{r}
+par(mfrow = c(n, 1), mar = c(3, 4, 1, 1))
+
+for (f in rf_files[1:n]) {
+  plot(plotter(readRDS(f)))
+}
+```
+
+
+\newpage
+
+## Model Dependencies
+
+```{r DepPlot, echo=FALSE, out.width="\\textwidth", fig.width=7, fig.height=7}
+par(mar = c(0,0,0,0))
+plot(
+  params$dependencies$tree$graph,
+  layout = params$dependencies$tree$coords,
+  vertex.label = params$dependencies$tree$labels,
+  vertex.label.cex = 0.3,
+  vertex.label.color = "black",
+  vertex.size = 7,
+  edge.arrow.size = 0.2,
+  vertex.color = params$dependencies$tree$colors
+)
+```

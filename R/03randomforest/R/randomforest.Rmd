@@ -1,0 +1,468 @@
+---
+title: "Random Forest"
+author: "JW"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## **Setup**
+
+Zu Beginn: Setze das Arbeitsverzeichnis auf das Verzeichnis dieses Scriptes, um relative Pfade verwenden zu können.
+
+#### Imports
+
+```{r Packages, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(tidymodels)
+library(recipes)
+library(parsnip)
+library(workflows)
+library(tune)
+library(dplyr)
+```
+
+#### Hilfsfunktionen
+
+```{r Helpers, warning=FALSE}
+source("helpers.R")
+source("model.R")
+source("class_RFmodel.R")
+```
+
+#### Database connection
+
+```{r DatabaseConnection}
+db = RSQLite::dbConnect(RSQLite::SQLite(), "data/db/prepdata.db")
+```
+
+## **Data**
+
+Der in einem ersten Schritt vorbereitete Datensatz wird eingelesen (siehe /insight.R). 
+
+```{r ReadData}
+readin = DBI::dbReadTable(db, "prepdata") |> 
+  dplyr::mutate_if(is.character, factor)
+```
+
+Dieser beinhaltet Spalten zur Identifikation eines Schadens, Spalten, die als Prädiktoren verwendet werden sowie mehrere potentielle Zielvariablen, wobei sich vorerst auf *bewert_d* konzentriert werden soll.
+
+#### Überblick
+
+```{r Exploration}
+readin |> 
+  skimr::skim()
+```
+
+Hierbei fallen verschiedene Punkte auf, die im Rahmen der Modellbildung zu beachten sind.
+
+#### Faktoren
+
+  - Für die Untersuchung stehen 24 verschiedene BSP-ID's zur Verfügung.
+
+  - Die Spalten *konstruktion*, *bauteil* und *zwgruppe* enthalten eine große Anzahl einzigartiger Werte -> step_other()
+  
+```{r PlotOthers, echo=FALSE, out.width="100%"}
+readin |> 
+  dplyr::select(ort, baujahr, konstruktion, bauteil, zwgruppe)|>
+  dplyr::distinct() |> 
+  tidyr::pivot_longer(cols = c(konstruktion, bauteil, zwgruppe), names_to = "feature", values_to = "value") |> 
+  tidyr::drop_na() |> 
+  ggplot2::ggplot(aes(x = value, fill = feature)) +
+  ggplot2::geom_bar() +
+  ggplot2::facet_wrap(~ feature, scales = "free", ncol = 1, nrow = 3) +
+  ggplot2::labs(x = NULL, y = "distinct counts per feature") +
+  ggplot2::theme_minimal() + 
+  ggplot2::theme(
+    axis.text.x = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    plot.title.position = "plot",
+    legend.position = "none"
+  )
+```
+  
+  - Die Spalte *hoechst_sachverhalt_oben* enthält eine große Anzahl einzigartiger Werte. Wichtige Information ist aber eigentlich nur die Art des Sachverhalts (Autobahn/Bundes-/Landstraße etc.). Hier sollte aggregiert werden. 
+
+<div style="margin-left: 40px;">
+```{r SachverhaltOben}
+# Regex
+prep = readin |> 
+  dplyr::mutate(
+    hoechst_sachverhalt_oben =
+      trimws(stringr::str_remove(hoechst_sachverhalt_oben, ".*: "))
+  ) |> 
+  dplyr::mutate(
+    hoechst_sachverhalt_oben = 
+      stringr::str_remove(hoechst_sachverhalt_oben, "\\s.*")
+  )
+```
+</div>
+
+  - Die Spalten *feld*, *quer* und *hoch* haben eine vergleichsweise niedrige *complete_rate*.
+
+#### Nummerische Werte
+
+  - Das früheste verfügbare Baujahr ist 1800. Naja.
+  
+  - Es sind viele Brücken mit einer Länge von unter 10m (ca. 50%) im Datensatz vorhanden. Generell Rechtsschiefe bei Brückenabmessungen. 
+  
+  - Das erste Prüfjahr einer der verfügbaren BSP-ID's ist 2000. Das letzte 2025.
+  
+  - bewert_d weist im Vergleich zu bewert_s und bewert_v den größeren IQR auf.
+  
+  - Das größte Brückenalter zum Zeitpunkt einer Prüfung ist 219 Jahre.
+  
+  - Die Klassen der Zielvariable *bewert_d* sind stark unsausgeglichen. Up-/downsampling? Gewichtung? Echtes Klassifikationsmodell?
+  
+<div style="margin-left: 40px;">
+```{r Hist}
+hist(prep$bewert_d)
+```
+</div>  
+  
+## **Model**
+
+#### Datenauswahl
+
+Die RF's sollen für die verschieden BSP-IDs getrennt erstellt werden. 
+Anhand des an dieser Stelle beschriebenen Ablaufs kann der Prozess für eine einzelne BSP-ID nachvollzogen werden.
+
+```{r Select one BSP-ID}
+bspids = names(sort(table(readin$bsp_id), decreasing = TRUE))
+
+# Filter for bspid of interest
+prep_1bspid = prep |> 
+  dplyr::filter(bsp_id == bspids[2])
+
+hist_plot = ggplot(prep_1bspid, aes(x = as.factor(bewert_d))) +
+  geom_bar() + 
+  geom_text(
+    stat = "count",
+    aes(label = after_stat(count)),
+    vjust = -0.5,
+    size = 4
+  ) +
+  xlab("bewert_d") +
+  theme_minimal()
+
+hist_plot
+```
+
+Mit dem Datensatz wird ein Train-Test-Split durchgeführt.
+
+```{r TrainTestSplit}
+set.seed(1234)
+
+prep_1bspid = prep_1bspid |> 
+  dplyr::group_by(schaden) |> 
+  dplyr::mutate(max_bewert_d = max(bewert_d)) |> 
+  dplyr::ungroup() |> 
+  # Entferne bewert_d-Klassen mit weniger als zwei Einträgen
+  dplyr::group_by(bewert_d) |> 
+  dplyr::filter(n() > 1)
+
+data_split = rsample::group_initial_split(
+  data = prep_1bspid, 
+  group = schaden, 
+  prop = 0.80,
+  strata = max_bewert_d
+)
+
+train_data = rsample::training(data_split) |> 
+  dplyr::select(-max_bewert_d)
+test_data  = rsample::testing(data_split) |> 
+  dplyr::select(-max_bewert_d)
+
+train_data$bewert_d |> table()
+
+test_data$bewert_d |> table()
+
+```
+
+Für die Modellevaluierung wird gebootstrapped.
+Dabei wird die die anzahl von Einträgen pro Schadensklasse
+
+```{r Resampling}
+split_by_bewert_d = split(train_data, f = train_data$bewert_d)
+
+counts = sapply(split_by_bewert_d, function(df) length(unique(df$schaden)))
+
+min_max = 1/100
+
+map = function(counts, min_max) {
+  m = (min(max(counts), min(counts) * 1/min_max) - min(counts))/
+    (max(counts) - min(counts)) * (counts - min(counts)) + min(counts)
+
+  m = round(m, 0)
+  
+  return(m)
+}
+
+# Initial number of resamples
+mapping = map(counts, min_max)
+n_boots = ceiling(max(counts)/max(mapping))
+
+# Eventually increase number of resamples if n_boots < 10
+while (n_boots < 10) {
+  min_max = min_max * 2
+  mapping = map(counts, min_max)
+  n_boots = ceiling(max(counts)/max(mapping))
+  print(min_max)
+}
+
+n_boots = 2 # <- DELETE !!!
+
+splits = lapply(1:n_boots, FUN = function(id) {
+
+  df = purrr::map_dfr(names(mapping), function(bd) {
+    train_data |>
+      dplyr::group_by(schaden) |>
+      dplyr::mutate(max_bewert_d = max(bewert_d)) |>
+      dplyr::filter(max_bewert_d == bd) |>
+
+      dplyr::slice_head(n = 1) |>
+      dplyr::slice_sample(n = mapping[[bd]]) |>
+      dplyr::ungroup() |>
+      dplyr::mutate(bewert_d = factor(bewert_d))
+  })
+
+  initial_sp = rsample::group_initial_split(
+    data = df,
+    group = schaden,
+    prop = 0.80,
+    strata = max_bewert_d
+  )
+
+  sp = rsample::make_splits(
+    x = rsample::training(initial_sp) |> dplyr::select(-max_bewert_d),
+    assessment = rsample::testing(initial_sp) |> dplyr::select(-max_bewert_d)
+  )
+
+  return(sp)
+})
+
+boots = rsample::manual_rset(
+  splits = splits,
+  ids = as.character(paste0("Bootstrap", 1:n_boots))
+)
+```
+
+```{r Faktorisierung}
+# Faktorisieren von bewert_d zur Klassifikation
+train_data = train_data |> dplyr::mutate(bewert_d = factor(bewert_d))
+test_data  = test_data  |> dplyr::mutate(bewert_d = factor(bewert_d))
+```
+
+#### Recipe
+
+Workflowsets?
+
+```{r Baserecipe}
+rec_base = recipes::recipe(bewert_d ~ ., data = train_data) |>
+  # Entfernung von Identifikationsvariablen aus Daten
+  recipes::update_role(schaden, ort, tbwnr, schad_id, new_role = "id") |>   
+  recipes::step_rm(has_role("id")) |>
+  # Entfernung von Zielvariablen aus Daten
+  recipes::update_role(
+    zustandsnote, zustandsnotenklasse, substanzkennzahl, bewert_s, bewert_v, 
+    max_d, max_s, max_v, new_role = "bewert"
+  ) |>   
+  recipes::step_rm(has_role("bewert"))
+```
+
+```{r Recipe1}
+rec1 = rec_base |> 
+  # Near-zero-variance Prädiktoren entfernen
+  recipes::step_nzv(recipes::all_numeric_predictors()) |>               
+  # Viele seltene Variablen zusammenfassen
+  recipes::step_other(
+    bauteil, konstruktion, zwgruppe, threshold = 0.01, other = "other"
+  ) |> 
+  # Umgang mit unbekannten Faktoren/neue Levels im Test setzen
+  recipes::step_novel(recipes::all_nominal_predictors()) |> 
+  # NA handling
+  recipes::step_unknown(
+    recipes::all_nominal_predictors(), new_level = "unknown"
+  )
+```
+
+```{r Recipe2}
+rec2 = rec1 |> 
+  # Normalize numeric predictors
+  recipes::step_normalize(recipes::all_numeric_predictors()) # |> 
+  # Optional: clean text
+  # textrecipes::step_clean_levels(schaden, ort, hoch)
+```
+
+#### Model
+
+```{r SpecAndWorkflow}
+ranger_spec = parsnip::rand_forest(
+  mtry = tune::tune(), 
+  min_n = tune::tune(), 
+  trees = 1000
+  ) |> 
+  parsnip::set_mode("classification") |> 
+  parsnip::set_engine("ranger") 
+
+ranger_workflow = workflows::workflow() |> 
+  workflows::add_recipe(rec2) |> 
+  workflows::add_model(ranger_spec)
+```
+
+```{r Tuning, message=FALSE}
+# Tuning
+ranger_tune = tune::tune_grid(
+  ranger_workflow, 
+  resamples = boots, 
+  grid = 2, # <- 11 !!!
+  control = tune::control_grid(save_pred = TRUE, verbose = TRUE),
+  metrics = yardstick::metric_set(
+    yardstick::pr_auc, 
+    yardstick::roc_auc, 
+    yardstick::accuracy,  
+    yardstick::brier_class
+  )
+)
+
+# Tuning resuls
+autoplot(ranger_tune)
+```
+
+```{r Fitting}
+# Besten Parameter auswählen
+best_params = tune::select_best(x = ranger_tune, metric = "pr_auc")
+
+# Besten RF erstellen
+final_rf = tune::finalize_workflow(ranger_workflow, best_params) |>
+  fit(data = train_data) |> 
+  workflows::extract_fit_parsnip()
+```
+
+```{r Predictions}
+probs = predict(final_rf, new_data = test_data, type = "prob") |> 
+  dplyr::bind_cols(truth = test_data$bewert_d)
+
+preds = predict(final_rf, new_data = test_data) |> 
+  dplyr::bind_cols(truth = test_data$bewert_d) |> 
+  dplyr::select(truth, .pred_class)
+```
+
+```{r Metrics}
+# Metrics
+metr = purrr::map_dfr(levels(preds$truth), my_class_metrics, pred = preds)
+
+# ROC curve
+yardstick::roc_curve(probs, truth = truth, setdiff(colnames(probs), "truth")) |> 
+  autoplot() +
+  ggplot2::facet_wrap(
+    ~ .level, 
+    ncol = ceiling(sqrt(length(unique(prep_1bspid$bewert_d)))), 
+    nrow = ceiling(sqrt(length(unique(prep_1bspid$bewert_d))))
+  )
+
+# PR curve
+yardstick::pr_curve(probs, truth = truth, setdiff(colnames(probs), "truth")) |> 
+  autoplot() +
+  ggplot2::facet_wrap(
+    ~ .level, 
+    ncol = ceiling(sqrt(length(unique(prep_1bspid$bewert_d)))), 
+    nrow = ceiling(sqrt(length(unique(prep_1bspid$bewert_d))))
+  )
+
+# ROC
+roc_df <- roc_curve(probs, truth = truth, setdiff(colnames(probs), "truth")) |> 
+  mutate(type = "ROC") |> 
+  dplyr::mutate(x = 1-specificity) |>
+  dplyr::mutate(y = sensitivity) |> 
+  dplyr::select(.level, x, y) |> 
+  dplyr::mutate(type = "ROC")
+
+# PR
+pr_df <- pr_curve(probs, truth = truth, setdiff(colnames(probs), "truth")) |> 
+  mutate(type = "PR") |> 
+  dplyr::mutate(x = recall) |> 
+  dplyr::mutate(y = precision) |> 
+  dplyr::select(.level, x, y) |> 
+  dplyr::mutate(type = "PR")
+
+combined_ROC_PR_plot(roc_df, pr_df)
+```
+
+```{r Variable Importance}
+
+# Permutation
+
+imp_spec = ranger_spec |>
+  tune::finalize_model(select_best(ranger_tune, metric = "roc_auc")) |>
+  set_engine("ranger", importance = "permutation")
+
+workflows::workflow() |>
+  workflows::add_recipe(rec2) |>
+  workflows::add_model(imp_spec) |>
+  workflows::fit(train_data) |>
+  workflows::extract_fit_parsnip() |>
+  vip::vip(geom = "point") +
+  ggplot2::ylab("Importance ('permutation')") +
+  ggplot2::theme_minimal()
+
+# Gini
+
+imp_spec = ranger_spec |>
+  tune::finalize_model(select_best(ranger_tune, metric = "roc_auc")) |>
+  set_engine("ranger", importance = "impurity")
+
+workflows::workflow() |>
+  workflows::add_recipe(rec2) |>
+  workflows::add_model(imp_spec) |>
+  workflows::fit(train_data) |>
+  workflows::extract_fit_parsnip() |>
+  vip::vip(geom = "point") +
+  ggplot2::ylab("Gini index ('impurity')") +
+  ggplot2::theme_minimal()
+```
+
+```{r Loop}
+# Paket aus Arbeitsverzeichnis ladmen
+# devtools::install_github("justusweyers/damageRF")
+bspids = names(sort(table(readin$bsp_id), decreasing = TRUE))
+
+outdir = paste0("output/models/RFModels_", format(Sys.time(), "%Y-%m-%d_%H-%M-%S"), "/")
+
+dir.create(outdir)
+
+for (bspid in bspids[10]) {
+  
+  log_file <- file.path(outdir, paste0("rf_", bspid, ".log"))
+  log_con <- file(log_file, open = "wt")
+  
+  sink(log_con)
+  sink(log_con, type = "message")
+
+  cat(bspid, "\n")
+  cat("start: ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n\n")
+  flush.console()
+  
+  tryCatch({
+    rf = damageRF::rf1(bspid, prep = prep, n_boots = 2, grid = 2, tune_metric = "roc_auc")
+    saveRDS(rf, file.path(outdir, paste0("rf_", bspid, ".rds")))
+    flush.console()
+  }, error = function(e) {
+    message("Fehler bei BSP-ID ", bspid, ": ", e$message)
+  })
+  
+  cat("end: ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+  flush.console()
+
+  sink(type = "message")
+  sink()
+  
+  close(log_con)
+} 
+
+bspidXYZ = readRDS("")
+
+plotter(bspidXYZ)
+
+# printer("test.pdf", lapply(results, plotter))
+```

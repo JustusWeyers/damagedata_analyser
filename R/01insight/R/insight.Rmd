@@ -1,0 +1,360 @@
+---
+title: "Insight"
+author: "JW"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## **Setup**
+
+Zu Beginn: Setze das Arbeitsverzeichnis auf das Verzeichnis dieses Scriptes.
+
+#### Packages
+
+```{r Packages, warning=FALSE, message=FALSE}
+library(RSQLite)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(patchwork)
+```
+
+#### Hilfsfunktionen
+
+```{r Helpers, warning=FALSE}
+source("R/helpers.R")
+```
+
+#### Daten
+
+```{r DataImport, warning=FALSE}
+# Namen der bspid Hauptklassen
+bspid_mainclass = readRDS("data/bspid_class1.rds")
+# BSPID Unterklassen
+bspid_classes = readRDS("data/bspid_classes.rds")
+# Siehe 'splitbyBSPID'
+data_bspid = readRDS("data/data_bspid.rds")
+
+# Datenbank
+db = RSQLite::dbConnect(RSQLite::SQLite(), "data/db/fulldata.db")
+```
+
+## Issues
+
+#### Fehlerhafte Einträge
+
+Die Spalte *bauwerksname* ist nicht eindeutig. 
+So gibt es zum Beispiel mehrere Bauwerke mit dem bauwerksnamen ID000001:
+
+```{r Issues}
+DBI::dbGetQuery(db, "SELECT rowid, bauwerksname, ort, baujahr FROM fulldata WHERE bauwerksname = 'ID000001';")
+```
+
+Es gibt aber auch Fälle, bei denen das vermutlich selbe Bauwerk verschiedene Bauwerksnamen hat. 
+Das schränkt die Gebrauchbarkeit dieser Variable zur Bauwerksidentifikation im Datensatz ein.
+
+Im Folgenden werden daher nur die Spalten *ort* und *baujahr* zur Identifikation eines bestimmten Bauwerkes genutzt.
+
+Desweiteren gibt die folgenden Formen von Fehleinträgen:
+
+  - Keine BSP-ID vorhanden und/oder unsinnige Jahreszahlen in der Spalte *prufjahr* (bspw. *prufjahr* < 1900 und *prufjahr* > 2025). Ansonsten sind alle Daten mit BSP-ID Eintrag im Zeitraum von 2000 bis 2025
+  - Unvollständige BSP-ID's (enthalten in irgendeiner Form "99")
+  - Das Prüfjahr liegt zeiltlich vor dem Baujahr
+  - Duplikate
+  
+Diese Gruppen von Fehleinträgen werden entfernt:
+
+```{r Cleanup}
+# Tabelle einlesen
+fulldata = RSQLite::dbReadTable(db, "fulldata")
+
+# Entfernen von Fehleinträgen
+fulldata_clean = fulldata[!is.na(fulldata$bsp_id),] |> 
+  dplyr::filter(!stringr::str_detect(bsp_id, "99")) |> 
+  dplyr::filter(prufjahr-baujahr >= 0) |> 
+  unique()
+```
+
+#### Nur Haupt- und Einzelprüfungen
+
+Für die Modellierung werden nur Daten aus den regelmäßig durchgeführten 
+Haupt- und Einzelprüfungen der Bauwerke verwendet.
+Dies soll einer unausgewogenen Behandlung einzelner Brücken in puncto 
+Prüfhäufigkeit entgegenwirken, sowie doppelte Einträge pro Schaden und Jahr 
+verhindern. Es werden also alle Zeilen mit !(pra %in% c("H", "H2", "H1", "E")) 
+entfernt:
+
+```{r FilterPra}
+# Werte der Spalte 'pra'
+unique(fulldata_clean$pra)
+
+# Filtern von Hauptprüfungen
+fulldata_clean = fulldata_clean |> 
+  dplyr::filter(pra %in% c("H", "H1", "H", "E"))
+```
+
+#### Änderung 'Sachverhalte'
+
+```{r }
+fulldata_clean = fulldata_clean |> 
+  dplyr::mutate(
+    hoechst_sachverhalt_oben =
+      trimws(stringr::str_remove(hoechst_sachverhalt_oben, ".*: "))
+  ) |> 
+  dplyr::mutate(
+    hoechst_sachverhalt_oben = 
+      stringr::str_remove(hoechst_sachverhalt_oben, "\\s.*")
+  )
+```
+
+#### Split
+
+Die Tabelle wird anhand der BSP-ID's in eine Liste gesplittet.
+Diese wird als .rds-Datei gespeichert.
+
+```{r SplitbyBSPID, eval=TRUE, ref.label='splitbyBSPID'}
+data_bspid = split(fulldata_clean, fulldata_clean$bsp_id)
+saveRDS(data_bspid, file = "data/data_bspid.rds")
+```
+
+## **To Do Justus**
+
+**Check data - what do we have? how many entries (over the years) do we have per id per sub-structure?**
+
+```{r Counter}
+# Tbw dataframe 
+fulldata_tbw = fulldata_clean |> 
+  tidyr::unite("Tbw", ort, baujahr, tbwnr, sep = "_") |> 
+  dplyr::select(Tbw, schad_id, prufjahr, bsp_id) |> 
+  dplyr::distinct()
+
+# Count bspids
+bspid_count = sapply(names(data_bspid), function(bspid) {
+  nrow(fulldata_tbw |> dplyr::filter(bsp_id == bspid))
+})
+
+# Sort counts
+bspids = names(data_bspid)[order(bspid_count, decreasing = TRUE)]
+```
+
+```{r PlotAndPrint, eval=TRUE}
+printer(
+  "output/fulldata_EntriesIdAndSubstructure.pdf", 
+  lapply(X = bspids, FUN = my_plotter, data_tbw = fulldata_tbw, ylim = NA)
+)
+
+printer(
+  "output/fulldata_EntriesIdAndSubstructure_Yfixed.pdf", 
+  lapply(X = bspids, FUN = my_plotter, data_tbw = fulldata_tbw, ylim = 4000)
+)
+```
+
+#### **Check data - what do we need to remove?**
+
+#### Zeilen
+
+Es sollen nur die n am häufigsen vertretenen BSP-ID's verwendet werden.
+Desweiteren sollen nur Brücken mit einem Baujahr nach 1800 und vor 2026 berücksichtigt werden.
+
+```{r FilterBSPIDs}
+# Begrenzung auf erste 1:n BSP-ID's
+n = 1:24
+# Filter die häufigsten n BSP-ID's 
+basedata = fulldata_clean |> 
+  dplyr::filter(bsp_id %in% bspids[n]) |> 
+  dplyr::filter(baujahr >= 1800) |> 
+  dplyr::filter(baujahr <= 2025)
+```
+
+#### Spalten
+
+Insgesamt stehen 73 Spalten zur Verfügung. 
+
+```{r Skim}
+basedata |> 
+  skimr::skim()
+```
+
+Diese Spalten werden zum Teil im Rahmen der Modellierung zu unterschiedlichen 
+Zwecken (Identifikation, Prädiktoren, Zielvariablen) genutzt bzw. werden bereits 
+vorab aus Sachgründen (s.u.) aus dem Datensatz zur Modellerstellung entfernt.
+Die Spalten *ort* und *baujahr* lassen sich theoretisch sowohl zur Identifikation, als auch als Prädiktoren verwenden.
+
+Spalten, die zu Modellierungszwecken erhalten bleiben:
+
+*Identifikation von Brücken, Teilbauwerken, Einzelschäden*
+  
+  01. **ort** (Nächstgelegener Ort, z.B. `r sort(head(sample(na.omit(unique(fulldata_clean$ort)))))`)
+  02. **baujahr** (Baujahr, z.B. `r sort(head(sample(na.omit(unique(fulldata_clean$baujahr)))))`)
+  03. **tbwnr** (Teilbauwerksnummer)
+  04. **schad_id** (Nummer eines Schadens an einem Teilbauwerk)
+  05. **bsp_id** (BSP-ID, z.B. `r sort(head(sample(na.omit(unique(fulldata_clean$bsp_id)))))`)
+
+*Prädiktoren*
+
+  06. **bauwerksart_text** (Brückentyp, z.B. `r head(sample(na.omit(unique(fulldata_clean$bauwerksart_text))))`)
+  07. **stadium_text** (Nutzungs-/Baustatus, z.B. `r head(sample(na.omit(unique(fulldata_clean$stadium_text))))`)
+  08. **konstruktion** (Konstruktionsdetails, z.B. `r head(sample(na.omit(unique(fulldata_clean$konstruktion))))`)
+  09. **laenge** (Brückenlänge)
+  10. **breite** (Brückenbreite)
+  11. **flaeche** (Brückenfläche)
+  12. **statisches_system_laengs** (34 Klassen von Tragwerken in Längsrichtung, z.B. `r head(sample(na.omit(unique(fulldata_clean$statisches_system_laengs))))`)
+  13. **statisches_system_quer** (16 Klassen Tragwerken in Querrichtung, z.B. `r head(sample(na.omit(unique(fulldata_clean$statisches_system_quer))))`)
+  14. **hoechst_sachverhalt_oben** (Nutzungsform, z.B. `r head(sample(na.omit(unique(fulldata_clean$hoechst_sachverhalt_oben))))`)
+  15. **jast_lage** (Nutzungsform, z.B. `r head(sample(na.omit(unique(fulldata_clean$jast_lage))))`)
+  16. **br_bauwerkswinkel** (?, z.B. `r head(sample(na.omit(unique(fulldata_clean$br_bauwerkswinkel))))`)
+  17. **br_bw_winkel_richtung** (?, z.B. `r head(sample(na.omit(unique(fulldata_clean$br_bw_winkel_richtung))))`)
+  18. **laengenklasse** (?, z.B. `r head(sample(na.omit(unique(fulldata_clean$laengenklasse))))`)
+  19. **br_maximale_laengsneigung** (?, z.B. `r head(sample(na.omit(unique(fulldata_clean$br_maximale_laengsneigung))))`)
+  20. **lage_bl** (Bundesland, z.B. `r sort(head(sample(na.omit(unique(fulldata_clean$lage_bl)))))`)
+  21. **schaden** (?, z.B. `r head(sample(na.omit(unique(fulldata_clean$schaden))))`)
+  22. **bauteil** (?, z.B. `r head(sample(na.omit(unique(fulldata_clean$bauteil))))`)
+  23. **bautlgrupp** (?, z.B. `r head(sample(na.omit(unique(fulldata_clean$bautlgrupp))))`)
+  24. **zwgruppe** (?, z.B. `r head(sample(na.omit(unique(fulldata_clean$zwgruppe))))`)
+  25. **menge_all** (Schadensmenge in Worten, z.B. `r head(sample(na.omit(unique(fulldata_clean$menge_all))))`)
+  26. **prufjahr** (Prüfjahr, z.B. `r sort(head(sample(na.omit(unique(fulldata_clean$prufjahr)))))`)
+  27. **ueberbau** (?, z.B. `r head(na.omit(unique(fulldata_clean$ueberbau)))`) 
+  28. **feld** (Schadenslokalisation, z.B. `r head(na.omit(unique(fulldata_clean$feld)))`) 
+  29. **quer** (Schadenslokalisation, z.B. `r head(na.omit(unique(fulldata_clean$quer)))`)
+  30. **hoch** (Schadenslokalisation, z.B. `r head(na.omit(unique(fulldata_clean$hoch)))`)
+  - (ort, baujahr)
+
+*Zielvariablen*
+
+  31. **zustandsnote** (Zustandsnote, z.B. `r sort(head(sample(na.omit(unique(fulldata_clean$zustandsnote)))))`)
+  32. **zustandsnotenklasse** (Zustandsnotenklasse, z.B. `r sort(head(sample(na.omit(unique(fulldata_clean$zustandsnotenklasse)))))`)
+  33. **substanzkennzahl** (Zustandsnote ohne Verkehrssicherheitsaspekte, z.B. `r sort(head(sample(na.omit(unique(fulldata_clean$substanzkennzahl)))))`)
+  34. **bewert_s** (Standsicherheitsbewertung in 0 bis 5)
+  35. **bewert_v** (Verkehrssicherheitsbewertung in 0 bis 5)
+  36. ***bewert_d*** (Dauerhaftigkeitsbewertung in 0 bis 5)
+  37. **max_s** (? in 0 bis 5)
+  38. **max_v** (? in 0 bis 5)
+  39. **max_d** (? in 0 bis 5)
+
+*Die folgenden Spalten werden entfernt, da sie keinen Mehrwert für die Modellbildung besitzen:*
+
+  40. **konteil** (Zu wenig Einträge, ? z.B. `r head(sample(na.omit(unique(fulldata_clean$konteil))))`)
+  41. **detailkont** (Zu wenig Einträge. Hersteller ? z.B. `r head(na.omit(unique(fulldata_clean$detailkont)))`) 
+  42. **schaden_m** (Zu wenig Einträge. ? z.B. `r head(na.omit(unique(fulldata_clean$schaden_m)))`)
+  43. **menge_di** (Zu wenig Einträge, Dimension der Schadensmenge z.B. `r head(sample(na.omit(unique(fulldata_clean$menge_di))))`)
+  44. **menge_di_m** (Zu wenig Einträge. Schadensmenge als Zahl, z.B. `r head(sample(na.omit(unique(fulldata_clean$menge_di_m))))`)
+  45. **quer_m** (Zu wenig Einträge, Schadenslokalisation, z.B. `r head(na.omit(unique(fulldata_clean$quer_m)))`)
+  46. **baustoffklasse** (ausschließlich `r na.omit(unique(fulldata_clean$baustoffklasse))`)
+  47. **bauwerksname** (Bauwerks ID, Namen in Form einer nicht eindeutigen ID unbrauchbar s.o.) 
+  48. **bauj_unb** (Doppelung von baujahr)
+  49. **uiua_text** (Verantwortung für Erhaltung, z.B. `r head(na.omit(unique(fulldata_clean$uiua_text)))`)
+  50. **hoechst_sachverhalt_unten** (überbrückter 'Sachverhalt', , z.b. `r head(na.omit(unique(fulldata_clean$hoechst_sachverhalt_unten)))`)
+  51. **restliche_sachverhalte** (Sonstige 'Sachverhalte', z.B. `r head(na.omit(unique(fulldata_clean$restliche_sachverhalte)))`)
+  52. **altersklasse** (Doppelung von baujahr, z.B. `r head(na.omit(unique(fulldata_clean$altersklasse)))`)
+  53. **datum_letzte_hauptpruefung** (für Brückenzustand unerheblich)
+  54. **datum_letzte_einfachpruefung** (für Brückenzustand unerheblich)
+  55. **lfdnr** (?, z.B. `r head(na.omit(unique(fulldata_clean$lfdnr)))`)
+  56. bis 67. **bemerk1, bemerk1_m, ..., bemerk6, bemerk6_m** (kaum relevante Inhalte)
+  68. **text** (nicht auf einfache Weise maschinell auswertbar)
+  69. **bild** (nicht verfügbar, nicht Modellgegenstand)
+  70. **kont_jn** (?, z.B. `r head(na.omit(unique(fulldata_clean$kont_jn)))`) 
+  71. **not_konst** (?, ausschließlich `r head(na.omit(unique(fulldata_clean$not_konst)))`) 
+  72. **konvert** (?, ausschließlich `r head(na.omit(unique(fulldata_clean$konvert)))`) 
+  73. **pra** (Art der Prüfung, ausschließlich Hauptprüfungen s.o.)
+
+```{r FilterData, eval=TRUE}
+basedata = basedata |> 
+  dplyr::select(
+    
+    # "Identifikation"
+    ort, baujahr, tbwnr, schad_id, bsp_id, 
+    
+    # Prädiktoren
+    bauwerksart_text, stadium_text, konstruktion, laenge, breite, flaeche,
+    statisches_system_laengs, statisches_system_quer, hoechst_sachverhalt_oben, 
+    jast_lage, br_bauwerkswinkel, br_bw_winkel_richtung, laengenklasse, 
+    br_maximale_laengsneigung, lage_bl , schaden, bauteil, bautlgrupp, zwgruppe, 
+    menge_all, prufjahr,
+    ueberbau, feld, quer, hoch, 
+    
+    # Zielvariablen
+    zustandsnote, zustandsnotenklasse, substanzkennzahl, bewert_s, bewert_v, 
+    bewert_d, max_s, max_v, max_d 
+    
+  )
+```
+
+Nach den vorgenommenen Aussortierungen von Spalten und insbesondere den Einträgen
+von Sonderprüfungen ergibt sich ein verändertes Bild der zeitlichen Verteilung von 
+Einträgen verschiedener Bauwerke:
+
+```{r PlotAndPrint2, eval=TRUE}
+# Tbw dataframe 
+basedata_tbw = basedata |> 
+  tidyr::unite("Tbw", ort, baujahr, tbwnr, sep = "_") |> 
+  dplyr::select(Tbw, schad_id, prufjahr, bsp_id) |> 
+  dplyr::distinct()
+
+printer(
+  "output/basedata_EntriesIdAndSubstructure.pdf", 
+  lapply(X = bspids[n], FUN = my_plotter, data_tbw = basedata_tbw, ylim = NA)
+)
+
+printer(
+  "output/basedata_EntriesIdAndSubstructure_Yfixed.pdf", 
+  lapply(X = bspids[n], FUN = my_plotter, data_tbw = basedata_tbw, ylim = 4000)
+)
+```
+
+## **Export des vorbereiteten Datensatzes**
+
+Dieser auf einen Bestimmten Grundstock von Daten reduzierte Datensatz wird abgespeichert.
+In einem nächsten Schritt können darauf aufbaued verschiedene Datensätze für die Modellbildung erstellt werden.
+
+```{r Save}
+# Speichern
+db_out = DBI::dbConnect(RSQLite::SQLite(), dbname = "output/basedata.db")
+DBI::dbWriteTable(db_out, name = "basedata", value = basedata, overwrite = TRUE)
+dbDisconnect(db_out)
+```
+
+## **Weitere Informationen**
+
+[BAST](https://www.bast.de/DE/Themen/Digitales/HF_4/Massnahmen/brueckenstatistik/bruecken_hidden_node.html)
+
+## **Playground**
+
+#### Eindeutigkeit
+
+```{r Buildings}
+buildings = na.omit(RSQLite::dbGetQuery(db, "SELECT DISTINCT ort, baujahr FROM fulldata;"))
+```
+
+#### Visualisierung Baujahre
+
+```{r AnzahlBaujahr, fig.height=3}
+anzahl_baujahr = RSQLite::dbGetQuery(db, "
+  SELECT baujahr, COUNT(*) AS anzahl
+  FROM (
+    SELECT DISTINCT ort, baujahr
+    FROM fulldata
+  ) AS unique_data
+  GROUP BY baujahr;
+")
+
+ggplot(anzahl_baujahr, aes(x = baujahr, y = anzahl)) +
+  geom_point() +
+  scale_y_log10() +
+  theme_minimal()
+```
+
+#### Visualisierung Prüfjahre
+
+```{r AnzahlPrufjahr, fig.height=3}
+anzahl_prufjahr = RSQLite::dbGetQuery(db, "
+  SELECT bsp_id, prufjahr, COUNT(*) AS anzahl
+  FROM fulldata
+  GROUP BY prufjahr
+  ORDER BY anzahl DESC;
+")
+
+ggplot(anzahl_prufjahr, aes(x = prufjahr, y = anzahl, shape = is.na(bsp_id))) +
+  geom_point() +
+  scale_y_log10() +
+  theme_minimal()
+```

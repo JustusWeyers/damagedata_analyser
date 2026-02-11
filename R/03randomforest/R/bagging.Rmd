@@ -1,0 +1,215 @@
+---
+title: "Datainsight"
+author: "JW"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## **Setup**
+
+Zu Beginn: Setze das Arbeitsverzeichnis auf das Verzeichnis dieses Scriptes, um relative Pfade verwenden zu können.
+
+#### Imports
+
+```{r packages, warning=FALSE, message=FALSE}
+library(RSQLite)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(rpart)
+library(caret)   
+library(rpart.plot)
+library(vip)
+library(pdp)
+library(doParallel)
+library(foreach)
+library(ipred)
+library(ranger)
+```
+
+
+## *Setup*
+
+
+#### Hilfsfunktionen
+
+```{r helpers, warning=FALSE}
+source("helpers.R")
+```
+
+#### Database connection
+
+```{r database}
+db <- RSQLite::dbConnect(RSQLite::SQLite(), "data/db/prepdata.db")
+```
+
+#### Seeding
+```{r seeding}
+set.seed(1234)
+```
+
+## *Models*
+
+```{r prepatarion}
+# Read prepared data and factorise the character columns
+readin = DBI::dbReadTable(db, "prepdata")
+
+bspids = unique(readin$bsp_id)
+bspid = bspids[1]
+
+# Prepare data
+prep = readin |> 
+  # Filter for bspid of interest
+  dplyr::filter(bsp_id == bspid) |> 
+  # Factorise
+  dplyr::mutate(across(all_of(names(readin)[sapply(readin, is.character)]), as.factor)) |>
+  dplyr::mutate(across(where(is.factor), ~ factor(., levels = levels(.))))
+```
+
+```{r splitting}
+# Train split
+train = prep |> 
+  dplyr::filter(
+    schaden %in% sample(unique(schaden), size = 0.8 * length(unique(schaden)))
+  )
+
+# Test split
+test = setdiff(prep, train)
+
+# Check split proportion
+nrow(train) / (nrow(train) + nrow(test))
+
+# Check level equality
+all.equal(levels(train), levels(test))
+```
+
+#### Model formula
+
+```{r formula}
+# Available predictorvariables
+predictors = c(
+  "baujahr", "prufjahr", "bauwerksart_text", "stadium_text", "konstruktion", 
+  "laenge", "breite", "flaeche", "statisches_system_laengs", 
+  "statisches_system_quer", "hoechst_sachverhalt_oben", 
+  "hoechst_sachverhalt_unten", "jast_lage", "br_bauwerkswinkel", 
+  "br_bw_winkel_richtung", "laengenklasse", "baustoffklasse", 
+  "br_maximale_laengsneigung", "lage_bl", "bauteil", 
+  "bautlgrupp", "konteil", "zwgruppe", "menge_all", 
+  "menge_di_m", "pra", "alter"
+) # Entfernt: "menge_di"
+
+# Just paste all predictors
+fml_all <- as.formula(
+  paste("bewert_d", "~", paste(predictors, collapse = " + "))
+)
+```
+
+#### Bootstrapaggregating
+
+```{r}
+bag1 <- ipred::bagging(
+  formula = fml_all,
+  data = train,
+  nbagg = 100,
+  coob = TRUE,
+  control = rpart.control(minsplit = 2, cp = 0)
+)
+
+# Standard summary
+summary(bag1)
+
+# Out of bag error (coob = TRUE)
+bag1$err
+
+preds = data.frame(
+  schaden = test$schaden,
+  prufjahr = test$prufjahr,
+  bewert_d = test$bewert_d,
+  pred_bewert_d = round(predict(bag1, newdata = test), 0)
+)
+
+caret::RMSE(preds$bewert_d, preds$pred_bewert_d)
+
+ggplot(preds[preds$schaden == sample(unique(preds$schaden), size = 1),], aes(x = prufjahr)) +
+  ggplot2::geom_line(aes(y = pred_bewert_d), col = "darkred", lwd = 2) +
+  ggplot2::geom_line(aes(y = bewert_d), col = "forestgreen", lwd = 2) +
+  ggplot2::geom_point(aes(y = pred_bewert_d), col = "darkred", size = 5) +
+  ggplot2::geom_point(aes(y = bewert_d), col = "forestgreen", size = 5) +
+  ggplot2::ylim(5, 0) +
+  ggplot2::theme_minimal()
+```
+
+
+```{r}
+n_tree = 10:15
+
+rmse = sapply(n_tree, function(n) {
+  print(n)
+  bag <- ipred::bagging(
+    formula = fml_all,
+    data = train,
+    nbagg = n
+    # coob = TRUE,
+    # control = rpart.control(minsplit = 2, cp = 0)
+  )
+
+  true = test$bewert_d
+  pred = round(predict(bag1, newdata = test), 0)
+
+
+})
+
+return(caret::RMSE(pred = pred, obs = true))
+
+plot(x = n_tree, y = rmse, "l")
+```
+
+```{r baggingrmse}
+# RMSE über nTree
+
+max_tree = 56
+
+cl <- makeCluster(8)
+registerDoParallel(cl)
+
+predictions = foreach(
+  icount(max_tree), 
+  .packages = "rpart", 
+  .combine = cbind
+  ) %dopar% {
+    # bootstrap copy of training data
+    index <- sample(nrow(train), replace = TRUE)
+    train_boot <- train[index,]  
+  
+    # fit tree to bootstrap copy
+    bagged_tree <- rpart::rpart(
+      fml_all, 
+      control = rpart.control(minsplit = 2, cp = 0),
+      data = train_boot
+    ) 
+    
+    predict(bagged_tree, newdata = test)
+  }; stopCluster(cl)
+
+df = predictions |> as.data.frame() |>
+  mutate(
+    observation = 1:n(),
+    actual = test$bewert_d
+  ) |>
+  tidyr::gather(tree, predicted, -c(observation, actual)) |>
+  group_by(observation) |>
+  mutate(tree = stringr::str_extract(tree, '\\d+') |> as.numeric()) |>
+  ungroup() |>
+  arrange(observation, tree) |>
+  group_by(observation) |>
+  mutate(avg_prediction = cummean(predicted)) |>
+  group_by(tree) |>
+  summarize(RMSE = RMSE(avg_prediction, actual))
+
+ggplot2::ggplot(df, aes(tree, RMSE)) +
+    geom_line() +
+    xlab('Number of trees')
+
+
+
+```

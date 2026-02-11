@@ -1,0 +1,158 @@
+---
+title: "run_rf2"
+author: "JW"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Setup
+
+#### Imports
+
+```{r}
+library(damageRF)
+```
+
+#### Helpers
+
+```{r}
+source("R/helpers.R")
+```
+
+## Training
+
+#### Training characteristics
+
+```{r}
+training_characteristics = list(
+  errors = list(),
+  wd = getwd(),
+  data_dir = "data/datasets/",
+  output_dir = "output/"
+)
+
+training_characteristics[["session_info"]] = sessionInfo()
+training_characteristics[["model_name"]] = "rf2"
+```
+
+#### Loop
+
+Iterate through datasets. 
+
+```{r}
+for (db_path in list.files(training_characteristics[["data_dir"]], full.names = TRUE)) {
+  
+  # Take timestamp
+  training_characteristics[["start"]] = format(Sys.time(), "%H:%M:%S %d.%m.%Y")
+  
+  # Database connection
+  print("DB at:")
+  print(db_path)
+  
+  if (!RSQLite::dbCanConnect(RSQLite::SQLite(), db_path)) {
+    stop("Cannot connect to database at: ", db_path)
+  } else {
+    db = RSQLite::dbConnect(RSQLite::SQLite(), db_path)
+    print("Successfully connected to database.")
+  } 
+  
+  # Dataset name
+  dataset_name = tools::file_path_sans_ext(basename(db_path))
+  training_characteristics[["dataset"]] = dataset_name
+  
+  # Dataset output dir
+  training_characteristics[["dataset_out_dir"]] = paste0(
+    training_characteristics[["output_dir"]], 
+    "/",
+    training_characteristics[["model_name"]], 
+    "/",
+    training_characteristics[["model_name"]], 
+    "_", 
+    format(Sys.time(), "%Y-%m-%d_%H-%M-%S"), 
+    "/", 
+    dataset_name, 
+    "/"
+  )
+  
+  if (!dir.exists(training_characteristics[["dataset_out_dir"]])) {
+    dir.create(training_characteristics[["dataset_out_dir"]], recursive = TRUE)
+  }
+  
+  # Read data
+  print("Reading data from database...")
+  readin = DBI::dbReadTable(db, DBI::dbListTables(db)) |>
+    dplyr::mutate_if(is.character, factor)
+  
+  training_characteristics[["skim"]] = readin |> skimr::skim()
+  
+  # Get unique bsp_ids sorted by frequency
+  print("Extracting unique bsp_ids...")
+  bspids = names(sort(table(readin$bsp_id), decreasing = TRUE))
+  print(paste0("Found ", length(bspids), " unique bsp_ids."))
+  
+  # Loop through bspids and fit random forest models
+  print("Starting RF model fitting...")
+  for (bspid in bspids[1:2]) {
+
+    print(paste("Processing bsp_id:", bspid))
+
+    log_file = file.path(training_characteristics[["dataset_out_dir"]], paste0("rf_", bspid, ".log"))
+    log_con = file(log_file, open = "wt")
+
+    sink(log_con)
+    sink(log_con, type = "message")
+
+    cat(bspid, "\n")
+    cat("start: ", format(Sys.time(), "%Y-%m-%d_%H-%M-%S"), "\n\n")
+    flush.console()
+
+    tryCatch({
+      rf = damageRF::rf2(bspid, prep = readin, target = "bewert_d", n = 5000, trees = 1000, n_boots = 3)
+      saveRDS(rf, file.path(training_characteristics[["dataset_out_dir"]], paste0("rf_", bspid, ".rds")))
+      
+      training_characteristics[["metrics"]][[bspid]] = rf@metrics
+      training_characteristics[["size"]][[bspid]] = rf@size
+      training_characteristics[["plots"]][[bspid]] = plotter(rf)
+      
+      flush.console()
+    }, error = function(e) {
+      training_characteristics[["errors"]][[bspid]] = e 
+      message("Fehler bei BSP-ID ", bspid, ": ", e$message)
+    })
+
+    cat("end: ", format(Sys.time(), "%Y-%m-%d_%H-%M-%S"), "\n")
+    flush.console()
+
+    sink(type = "message")
+    sink()
+
+    close(log_con)
+  }
+  
+  training_characteristics[["end"]] = format(Sys.time(), "%H:%M:%S %d.%m.%Y")
+  
+  # # Printer
+  # 
+  # training_characteristics[["dependencies"]] = damageRF::dependency_report()
+  # 
+  # printer(
+  #   filename = file.path(training_characteristics[["dataset_out_dir"]], "plots.pdf"), 
+  #   plots = training_characteristics[["plots"]]
+  # )
+  # 
+  # rmarkdown::render(
+  #   input = "bericht.Rmd",
+  #   output_format = "pdf_document",
+  #   output_file = file.path(training_characteristics[["dataset_out_dir"]], paste0("report.pdf")),
+  #   params = training_characteristics,
+  #   envir = new.env()
+  # )
+  
+  saveRDS(training_characteristics, file.path(training_characteristics[["dataset_out_dir"]], "training_characteristics.rds"))
+  
+  # Disconnect from database
+  RSQLite::dbDisconnect(db)
+
+}
+```
+
