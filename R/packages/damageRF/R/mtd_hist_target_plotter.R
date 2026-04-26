@@ -3,9 +3,9 @@
 #'
 #' @param self self
 
-setGeneric("hist_target_plotter", function(self) standardGeneric("hist_target_plotter"))
+setGeneric("hist_target_plotter", function(self, target_name) standardGeneric("hist_target_plotter"))
 
-setMethod("hist_target_plotter", "RF", function(self) {
+setMethod("hist_target_plotter", "RF", function(self, target_name) {
 
   df1 = data.frame(self@train_data)
   df2 = data.frame(self@test_data)
@@ -23,7 +23,7 @@ setMethod("hist_target_plotter", "RF", function(self) {
       y = sum(n)
     )
 
-  ggplot2::ggplot(df, ggplot2::aes(x = as.factor(target), fill = source)) +
+  p = ggplot2::ggplot(df, ggplot2::aes(x = as.factor(target), fill = source)) +
     ggplot2::geom_bar() +
     ggplot2::geom_text(
       data = label_df,
@@ -52,5 +52,11 @@ setMethod("hist_target_plotter", "RF", function(self) {
     ggplot2::theme_minimal() +
     ggplot2::scale_fill_grey() +
     ggplot2::theme(legend.position = "none")
+
+  if (!is.na(target_name)) {
+    p = p + ggplot2::labs(x = target_name)
+  }
+
+  return(p)
 
 })

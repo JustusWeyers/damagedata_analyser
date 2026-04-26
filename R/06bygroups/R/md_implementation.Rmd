@@ -1,0 +1,91 @@
+---
+title: "implementation"
+author: "JW"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Setup
+
+```{r Setup - Libraries}
+devtools::load_all("../packages/damageRF")
+```
+
+```{r Setup - Functions}
+files = list.files(here::here("R/"), full.names = TRUE)
+sapply(files[startsWith(basename(files), "hlp_")], source)
+```
+
+## Read Data
+
+```{r ReadData}
+db = DBI::dbConnect(RSQLite::SQLite(), here::here("output/fulldata_bast_clim.db"))
+workingdata = DBI::dbReadTable(db, "fulldata_bast_clim") |> 
+  dplyr::as_tibble()
+DBI::dbDisconnect(db)
+```
+
+## Training
+
+```{r Training - Instanziation}
+bspids = bspid_instantiation()
+```
+
+```{r Training - Parallelize}
+# library(future)
+# library(future.apply)
+# 
+# plan(multisession, workers = max(1, floor(parallel::detectCores()/2)) - 1)
+# 
+# devtools::load_all("../packages/damageRF")
+# 
+# results <- future.apply::future_lapply(
+#   X = bspids[1:3],
+#   FUN = function(bspid) {
+#     
+#     bspid = set_data(bspid, workingdata)
+#     
+#     bspid = train_model(bspid, model = damageRF::rf5, testrun = TRUE)
+#     
+#     bspid = delete_data(bspid)
+#     
+#     return(bspid)
+#     
+#   },
+#   future.seed = TRUE
+# )
+# 
+# res1 = results[[1]]
+# res1@models[[3]]
+# 
+# save_results(results)
+```
+
+## Playground
+
+```{r Playground}
+devtools::load_all("../packages/damageRF")
+
+names(bspids)
+
+# Run
+bspid = bspids[[3]]
+bspid = set_data(bspid, workingdata)
+
+bspid = train_model(
+  self = bspid, 
+  model = damageRF::rf5, 
+  row_limit = 100000, 
+  trees = 1000, 
+  grid = 3,
+  n_boots = 3
+)
+
+bspid = delete_data(bspid)
+
+# Show results
+plot_target_age(bspid, bygroup = TRUE)
+plotter(bspid)
+
+
+```

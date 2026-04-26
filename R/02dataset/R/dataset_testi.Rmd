@@ -1,0 +1,54 @@
+---
+title: "dataset2"
+author: "Justus Weyers"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r}
+# Get working directory
+wd = here::here()
+pd = dirname(wd)
+pjd = rstudioapi::getActiveProject()
+
+source(here::here("R/helpers.R"))
+```
+
+```{r Fetch data}
+# Datenbank
+db = RSQLite::dbConnect(
+  RSQLite::SQLite(), 
+  here::here(pd, "01insight/data/db/fulldata.db")
+)
+# Einlesen des Basisdatensatzes
+fulldata = RSQLite::dbReadTable(db, "fulldata")
+```
+
+```{r}
+NullNullZweier = fulldata[startsWith(fulldata$bsp_id, "006-"),] |> 
+  dplyr::mutate(alter = prufjahr - baujahr) |>
+  dplyr::mutate(bewert_d = factor(bewert_d)) |> 
+  dplyr::sample_n(2000)
+```
+
+```{r}
+ggplot2::ggplot(NullNullZweier, ggplot2::aes(x = alter, y = bewert_d, color = bsp_id)) +
+  ggplot2::geom_point() +
+  ggplot2::theme_minimal() +
+  ggplot2::scale_y_reverse()
+```
+
+```{r}
+ggplot2::ggplot(NullNullZweier, ggplot2::aes(x = bsp_id, y = bewert_d)) +
+  ggplot2::geom_boxplot() +
+  ggplot2::theme_minimal() +
+  ggplot2::scale_y_reverse()
+
+ggplot2::ggplot(NullNullZweier, ggplot2::aes(y = bewert_d, x = alter)) +
+  ggplot2::geom_boxplot() +
+  ggplot2::theme_minimal() # +
+  # ggplot2::scale_y_reverse() 
+  # ggplot2::coord_flip()
+```
+
+
+

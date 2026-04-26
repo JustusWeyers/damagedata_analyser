@@ -1,0 +1,211 @@
+---
+title: "BSP-ID Transitions"
+author: "JW"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Setup
+
+##### Read Data
+
+```{r ReadData, cache=TRUE, warning = FALSE}
+db = DBI::dbConnect(RSQLite::SQLite(), "../../01insight/data/db/fulldata.db")
+fulldata = DBI::dbReadTable(db, "fulldata")
+```
+
+## Functions
+
+```{r Functions}
+transition_dynamicity <- function(df) {
+  mat = as.matrix(df)
+  total <- sum(mat)
+  diagonal <- sum(diag(mat))
+  off_diag <- total - diagonal
+  off_diag / total
+}
+
+print_mat = function(transition_counts_freq, bspid) {
+  red_mat = transition_counts_freq[[bspid]]
+  colnames(red_mat) <- gsub(paste0(bspid, "-"), "", colnames(red_mat))
+  colnames(red_mat) <- sub("-$", "", colnames(red_mat))
+  rownames(red_mat) <- sub("-$", "", rownames(red_mat))
+  
+  cat(paste0("<h5>BSP-ID ", bspid, "</h5>"), "\n")
+  cat("<pre style='font-size:10px'>")
+  print(red_mat)
+  cat("</pre>\n")
+  cat(paste0("<p>Anzahl Übergänge N = ", sum(transition_counts_freq[[bspid]]), "</p>\n"))
+}
+
+count_plt <- function(pts, n, title) {
+  old_mar <- par("mar")
+  par(mar = c(3, 4, 4, 2) + 0.1)
+  plot(
+    pts, xlab = "", ylab = "N [-]", axes = FALSE,
+    pch = c(rep(20, n), rep(4, length(pts)-n))
+  )
+  text(names(pts)[1:n], x = 1:n, y = pts[1:n], adj = c(-0.3, 0.2), cex = 0.8)
+  axis(2)
+  box()
+  title(title, adj = 0)
+  mtext("BSP-ID", side = 1, line = 1.0)
+  par(mar = old_mar)
+}
+```
+
+## Exploration
+
+#### Datawrangling
+
+```{r DataPreparation, cache=TRUE}
+data = fulldata |> 
+  dplyr::select(ort, baujahr, laenge, tbwnr, schad_id, prufjahr, bsp_id) |> 
+  dplyr::filter(dplyr::if_all(dplyr::everything(), ~ !is.na(.))) |> 
+  dplyr::mutate(ID = paste(ort, baujahr, laenge, tbwnr, schad_id, sep = "_")) |> 
+  dplyr::select(ID, prufjahr, bsp_id) |> 
+  dplyr::mutate(ID = as.integer(factor(ID))) |> 
+  dplyr::mutate(class1 = sub("-.*", "", bsp_id)) |> 
+  dplyr::filter(!stringr::str_detect(bsp_id, "99"))
+```
+
+
+#### Transition counts
+
+```{r TransitionCounts, cache=TRUE}
+class1s = sort(unique(data$class1))
+
+transition_counts = lapply(class1s, function(c1) {
+  
+  # Daten filtern und nach ID + Jahr sortieren
+  df = data |>
+    dplyr::filter(class1 == c1) |>
+    dplyr::arrange(ID, prufjahr)
+  
+  # Alle möglichen Zustände in dieser class1
+  all_states = sort(unique(df$bsp_id))
+  
+  # Liste der Zustandsfolgen pro ID
+  state_list = df |>
+    dplyr::group_by(ID) |>
+    dplyr::summarise(states = list(bsp_id)) |>
+    dplyr::pull(states)
+  
+  # Übergänge zählen
+  transitions = do.call(rbind, lapply(state_list, function(states) {
+    if(length(states) < 2) return(NULL)  
+    cbind(head(states, -1), tail(states, -1))
+  }))
+  
+  if(is.null(transitions)) {
+    # Leere quadratische Matrix
+    return(matrix(0, nrow = 1, ncol = 1, dimnames = list("-", "-")))
+  }
+  
+  # Tabelle erstellen
+  tab = table(transitions[,1], transitions[,2])
+  
+  # Tabelle auf alle Zustände erweitern (quadratisch)
+  tab_full = matrix(0, nrow = length(all_states), ncol = length(all_states),
+                    dimnames = list(all_states, all_states))
+  tab_full[rownames(tab), colnames(tab)] = tab
+  
+  return(tab_full)
+})
+
+transition_counts = setNames(transition_counts, class1s)
+transition_counts = purrr::keep(transition_counts, ~ !(nrow(.) == 0 & ncol(.) == 0))
+```
+
+Es folgen die Übergangsmatrizen der ersten acht BSP-IDs mit den meisten Einträgen von Übergängen und Selbst-Übergängen.
+
+```{r, echo = FALSE, results='asis'}
+options(width = 2000)
+
+transition_counts_freq = transition_counts[order(sapply(transition_counts, sum), decreasing = TRUE)]
+
+for (bspid in names(transition_counts_freq)[1:8]) {
+  print_mat(transition_counts_freq, bspid)
+}
+
+options(width = 80)
+```
+
+```{r PlotTransitions, echo = FALSE, fig.width=10, fig.height=5}
+# Make two plots
+layout(matrix(c(1,2), nrow = 1, byrow = TRUE))
+
+# Plot 1
+pts = sort(sapply(transition_counts, sum), decreasing = TRUE)
+count_plt(pts, n = 8, title = "Transitions + Self-Transitions")
+
+# Plot 2
+pts = sort(sapply(transition_counts, function(mat) {
+  diag(mat) = 0
+  return(sum(mat))
+}), decreasing = TRUE)
+count_plt(pts, n = 7, title = "Transitions")
+```
+
+#### Dynamics
+
+```{r TransitionCountsDynamic}
+dynamics = sapply(transition_counts, transition_dynamicity)
+transition_counts_dyn = transition_counts[order(dynamics)]
+```
+
+```{r TransitionCountsDynamicOut, echo = FALSE}
+df = as.data.frame(t(round(dynamics[order(dynamics, decreasing = TRUE)], 2)), check.names = FALSE)
+colnames(df) = names(dynamics)[order(dynamics, decreasing = TRUE)]
+df
+```
+
+```{r}
+
+library(patchwork)
+
+# plott = function(bspid) {
+  
+tbl = ggpubr::ggtexttable(  
+  transition_counts_freq[[1]],
+  rows = rownames(transition_counts_freq[[1]])
+) + ggplot2::theme_minimal()
+
+p = ggplot2::ggplot(mtcars, ggplot2::aes(mpg, wt)) +
+  ggplot2::geom_point()
+
+
+plott("002")
+```
+
+```{r}
+# mat <- transition_counts_freq[[1]]
+# mat
+# 
+# df <- reshape2::melt(mat)
+# colnames(df) <- c("Row", "Col", "Value")
+# 
+# # ggplot
+# mat_plot = ggplot2::ggplot(df, ggplot2::aes(x = Col, y = Row, label = Value, fill = Value)) +
+#   ggplot2::geom_tile(color = "black") +  # optionale Kästchen
+#   ggplot2::scale_fill_gradient(low = "white", high = "steelblue") +  # Farbverlauf
+#   ggplot2::geom_text(size = 5) +
+#   ggplot2::scale_y_discrete(limits = rev(levels(df$Row))) +  # Zeilen von oben nach unten
+#   ggplot2::theme_minimal() +
+#   ggplot2::theme(
+#     axis.title = ggplot2::element_blank(),
+#     panel.grid = ggplot2::element_blank(),
+#     legend.position = "none"
+#   ) 
+# 
+# dta = fulldata[startsWith(fulldata$bsp_id, "025"),c("bsp_id", "bewert_d")]
+# dta = na.omit(dta[dta$bsp_id %in% colnames(mat),])
+# 
+# box_plot = ggplot2::ggplot(dta, ggplot2::aes(x = bsp_id, y = bewert_d)) +
+#   ggplot2::geom_boxplot() +
+#   ggplot2::scale_y_reverse() +
+#   ggplot2::theme_minimal()
+```
+
+
+

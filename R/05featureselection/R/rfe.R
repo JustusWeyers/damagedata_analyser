@@ -1,6 +1,18 @@
 
 ### Recursive Feature Elimination
 
+##################
+### Docker Run ###
+##################
+
+# Something similar to:
+
+# docker run --rm \
+#     -v "C:/.../05featureselection/output/:/app/output/" \
+#     -e DB_PATH=/app/output/dataset_rfe.db \
+#     -e OUTPUT_PATH=/app/output 
+#     justusweyers/05featureselection
+
 ####################
 ### Dependencies ###
 ####################

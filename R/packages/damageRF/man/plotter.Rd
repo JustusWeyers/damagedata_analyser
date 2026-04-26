@@ -4,7 +4,7 @@
 \alias{plotter}
 \title{Plotter method}
 \usage{
-plotter(self)
+plotter(self, target_name)
 }
 \arguments{
 \item{self}{self}

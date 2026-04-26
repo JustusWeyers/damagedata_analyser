@@ -1,0 +1,219 @@
+---
+title: "dwd_insight"
+author: "JW"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Setup
+
+#### Environment
+
+```{r ENV, echo=FALSE}
+dotenv::load_dot_env(".env")
+```
+
+#### CONSTANTS
+
+```{r}
+dwd_data_path = setNames(dir("data/dwd", full.names = TRUE), dir("data/dwd"))
+bkg_data_path = "data/bkg/dgm1000.utm32s.xyzascii/dgm1000.utm32s.xyzascii/dgm1000/"
+
+hyras_crs = "+proj=laea +lat_0=52 +lon_0=10 +x_0=4321000 +y_0=3210000 +ellps=GRS80 +units=m +no_defs"
+annualdata_crs = "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=3500000 +y_0=0 +ellps=bessel +units=m +no_defs"
+```
+
+#### Workingdataset
+
+```{r Data}
+# Basedata
+db = RSQLite::dbConnect(RSQLite::SQLite(), "../02dataset/output/datasetY.db")
+dataset = RSQLite::dbReadTable(db, "datasetY")
+```
+
+#### Spatials
+
+Originating from geocoding_insight.Rmd
+
+```{r LoadPositioningResults}
+positioning = read.csv2("data/here/here_datasetY.csv")
+positioning = data.table::as.data.table(positioning, keep.rownames = "ID")
+```
+
+```{r Spatials}
+points = positioning |> 
+  terra::vect(
+    geom = c("long", "lat"),
+    crs = "+proj=longlat +datum=WGS84"
+  )
+```
+
+## DWD Daily Data
+
+```{r DailydataFunctions}
+# Thaw-frost-changes ^= number of sign changes
+thaw_frost_changes <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) < 2) return(NA_integer_)
+  sum(diff(sign(x)) != 0)/2
+}
+
+# Annual statistics
+custom_stats <- function(x) {
+  x <- x[!is.na(x)]
+  c(
+    meanT = mean(x),
+    maxT  = max(x),
+    minT = min(x),
+    diffT = max(x)-min(x),
+    TFC   = thaw_frost_changes(x)
+  )
+}
+
+# Format lists -> long
+long_formatter = function(l) {
+  data_array = abind::abind(lapply(l, as.matrix), along = 3)
+  data_long = data.table::as.data.table(as.table(data_array))
+  data_long = data.table::setnames(
+    data_long, 
+    c("ID", "Metric", "Year", "value")
+  )
+  data_long$Year = as.numeric(data_long$Year)
+  return(data_long)
+}
+```
+
+#### Hyras
+
+```{r Hyras, eval=FALSE}
+# List files
+files = list.files(dwd_data_path["hyras"], full.names = TRUE)
+# Filter .nc files
+nc_files = files[endsWith(files, ".nc")]
+
+# Point projection
+nc_points = points |> 
+  terra::project(hyras_crs)
+
+# Extract routine
+hyras_list = do.call(c, lapply(nc_files, function(fn) {
+  
+  r = terra::rast(fn)
+  ext = terra::extract(r, nc_points)
+  res = t(apply(ext[, -1], 1, custom_stats))
+  dimnames(res) <- list(ID = seq_len(nrow(res)), Metric = colnames(res))
+  l = setNames(list(res), format(terra::time(r)[1], "%Y")) 
+
+  return(l)
+}))
+
+# Long format
+hyras_long = long_formatter(hyras_list)
+```
+
+
+```{r ReloadHyras}
+# write.csv2(hyras_long, "data/dwd/hyras_long.csv", row.names = FALSE)
+hyras_long = read.csv2("data/dwd/hyras_long.csv")
+```
+
+## DWD Annual Data
+
+```{r AnnualdataFunctions}
+days = function(data_name, pos1, pos2) {
+  files = list.files(dwd_data_path[data_name], full.names = TRUE)
+  asc_files = files[endsWith(files, ".asc")]
+  
+  # Point projection
+  asc_points = points |>
+    terra::project(terra::crs(annualdata_crs, proj = TRUE))
+  
+  # Extract routine
+  dlist = do.call(c, lapply(asc_files, function(fn) {
+    r = terra::rast(fn)
+    terra::crs(r) <- annualdata_crs
+    ext = as.matrix(terra::extract(r, asc_points)[,-1])
+    dimnames(ext) <- list(ID = seq_len(nrow(ext)), Metric = c(data_name))
+    l = setNames(list(ext), substr(fn, pos1, pos2)) 
+    return(l)
+  }))
+  
+  return(dlist)
+}
+```
+
+#### Snowcoverdays
+
+```{r Snowcoverdays}
+snowcoverdays_long = long_formatter(days("snowcoverdays", pos1 = 60, pos2 = 63))
+# ```
+
+#### Icedays
+
+# ```{r Icedays}
+icedays_long = long_formatter(days("icedays", pos1 = 48, pos2 = 51))
+# ```
+
+#### Summerdays
+
+# ```{r Summerdays}
+summerdays_long = long_formatter(days("summerdays", pos1 = 54, pos2 = 57))
+```
+
+## Elevation
+
+```{r}
+# Read raster
+ele = terra::rast(paste0(bkg_data_path, "dgm1000_utm32s.xyz"))
+terra::crs(ele) = readLines(paste0(bkg_data_path, "dgm1000_utm32s.prj"))[1]
+
+# Info
+terra::names(ele)
+
+# Point projection
+ele_points = points |>
+  sf::st_as_sf(coords = c("x", "y"), crs = 31467) |>
+  sf::st_transform(terra::crs(ele)) |>
+  terra::vect()
+
+elevations = terra::extract(ele, ele_points) |> 
+  dplyr::mutate(ID = as.character(ID)) |> 
+  data.table::as.data.table()
+```
+
+### Aggregation
+
+```{r AppendAll}
+# Append long data
+data_long = rbind(hyras_long, snowcoverdays_long, icedays_long, summerdays_long) |> 
+  data.table::as.data.table()
+
+# Nest into data.table column
+nn <- data_long[
+  ,
+  .(
+    data = list(
+      data.table::dcast(
+        .SD,
+        Year ~ Metric,
+        value.var = "value"
+      )
+    )
+  ),
+  by = ID
+]
+
+# Some data.table stuff
+data.table::setkey(nn, ID)
+data.table::setkey(positioning, ID)
+data.table::setkey(elevations, ID)
+data.table::setDT(dataset)
+data.table::setDT(positioning)
+data.table::setDT(elevations)
+
+# Merge
+posclim = positioning[nn][elevations, on = "ID"]
+merge_by_ID = dataset[posclim, `:=`(data = i.data, dgm1000_utm32s = i.dgm1000_utm32s), on = c("bauwerksart_text", "ort", "lage_bl")]
+
+saveRDS(merge_by_ID, "data/dwd/climate_data_nested_datasetY.rds")
+```

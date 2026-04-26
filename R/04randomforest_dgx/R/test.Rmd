@@ -1,0 +1,53 @@
+---
+title: "run_rf3"
+output: html_document
+---
+
+
+
+## Setup
+
+```{r Functions}
+fetch_data = function(db, bspid, dataset) {
+  
+  join_cols = c("ort", "baujahr", "tbwnr", "schad_id", "bsp_id")
+  
+  Aq = DBI::dbQuoteIdentifier(db, bspid)
+  Bq = DBI::dbQuoteIdentifier(db, dataset)
+  
+  cols_q = DBI::dbQuoteIdentifier(db, join_cols)
+  
+  on_clause = paste(
+    paste0(Bq, ".", cols_q),
+    "=",
+    paste0(Aq, ".", cols_q),
+    collapse = " AND "
+  )
+  
+  query = paste(
+    "SELECT", Bq, ".*",
+    "FROM", Bq,
+    "INNER JOIN", Aq,
+    "ON", on_clause,
+    ";"
+  )
+  
+  print(query)
+  
+  result = DBI::dbGetQuery(db, query)
+  
+  return(result)
+}
+```
+
+```{r DB Connection}
+db_path = "C:/Users/justu/Desktop/damagedata_analyser/R/04randomforest_dgx/data/datasets/MERGEDB.db"
+
+# Database connection
+if (!RSQLite::dbCanConnect(RSQLite::SQLite(), db_path)) {
+  stop("Cannot connect to database at: ", db_path)
+} else {
+  db = RSQLite::dbConnect(RSQLite::SQLite(), db_path)
+  print("Successfully connected to database.")
+}
+```

@@ -1,0 +1,211 @@
+---
+title: "run_rf3"
+output: html_document
+---
+
+#### Package
+
+```{r Packages}
+# Install local dependency only when not already available.
+require(ranger)
+devtools::load_all("C:/Users/justu/Desktop/damagedata_analyser/R/packages/damageRF")
+
+# if (!requireNamespace("damageRF", quietly = TRUE)) {
+#   install.packages("remotes")
+#   remotes::install_github("JustusWeyers/damagedata_analyser/R/packages/damageRF")
+# }
+```
+
+#### Helpers
+
+```{r rf2Helpers}
+# Reuse plotting and PDF export helpers.
+source("R/helpers.R")
+```
+
+#### Functions
+
+```{r Functions}
+fetch_data = function(db, bspid, dataset) {
+  
+  join_cols = c("ort", "baujahr", "tbwnr", "schad_id", "bsp_id")
+  
+  Aq = DBI::dbQuoteIdentifier(db, bspid)
+  Bq = DBI::dbQuoteIdentifier(db, dataset)
+  cols_q = DBI::dbQuoteIdentifier(db, join_cols)
+  
+  on_clause = paste(
+    paste0(Bq, ".", cols_q),
+    "=",
+    paste0(Aq, ".", cols_q),
+    collapse = " AND "
+  )
+  
+  query = paste(
+    "SELECT", Bq, ".*",
+    "FROM", Bq,
+    "INNER JOIN", Aq,
+    "ON", on_clause,
+    ";"
+  )
+  
+  result = DBI::dbGetQuery(db, query)
+  
+  return(result)
+}
+```
+
+## Setup
+
+#### Database connection
+
+```{r DB Connection}
+# db_path = Sys.getenv("DATASET_PATH")
+
+db_path = "C:/Users/justu/Desktop/damagedata_analyser/R/04randomforest_dgx/data/datasets/MERGEDB.db"
+
+# Database connection
+if (!RSQLite::dbCanConnect(RSQLite::SQLite(), db_path)) {
+  stop("Cannot connect to database at: ", db_path)
+} else {
+  db = RSQLite::dbConnect(RSQLite::SQLite(), db_path)
+  print("Successfully connected to database.")
+}
+```
+
+## Training
+
+#### Characteristics
+
+```{r TrainingCharacteristics}
+# Store metadata and outputs in this list
+training_characteristics = list(
+  errors = list(),
+  wd = getwd(),
+  data_dir = "/data/datasets/",
+  # output_dir = "/output/"
+  output_dir = "C:/Users/justu/Desktop/damagedata_analyser/R/04randomforest_dgx/output"
+)
+
+# Capture session infos
+training_characteristics[["session_info"]] = sessionInfo()
+
+# Model name
+training_characteristics[["model_name"]] = "rf3"
+
+# Define Dataset
+training_characteristics[["dataset"]] = "datasetY_1"
+training_characteristics[["bspid"]] = Sys.getenv("BSPID")               
+
+# Get subbspids
+tablenames = DBI::dbListTables(db)
+subbspids = gsub("DB", "", tablenames[startsWith(tablenames, paste0("DB", training_characteristics[["bspid"]]))])
+training_characteristics[["subbspids"]] = sort(subbspids)
+```
+
+#### Modeling - Loop through sub-bspids
+
+```{r Modeling}
+# Take timestamp
+training_characteristics[["start"]] = format(Sys.time(), "%H:%M:%S %d.%m.%Y")
+
+# Dataset output dir
+training_characteristics[["dataset_out_dir"]] = paste0(
+  training_characteristics[["output_dir"]], 
+  "/",
+  training_characteristics[["model_name"]], 
+  "/",
+  training_characteristics[["model_name"]], 
+  "_", 
+  format(Sys.time(), "%Y-%m-%d_%H-%M-%S"), 
+  "/", 
+  training_characteristics[["dataset"]], 
+  "/"
+)
+           
+if (!dir.exists(training_characteristics[["dataset_out_dir"]])) {
+  dir.create(training_characteristics[["dataset_out_dir"]], recursive = TRUE)
+}
+
+for (subbspid in training_characteristics[["subbspids"]]) {
+  
+  # Logging
+  log_file = file.path(training_characteristics[["dataset_out_dir"]], paste0("rf_", subbspid, ".log"))
+  log_con = file(log_file, open = "wt")
+  sink(log_con)
+  sink(log_con, type = "message")
+  cat(subbspid, "\n")
+  cat("start: ", format(Sys.time(), "%Y-%m-%d_%H-%M-%S"), "\n\n")
+  flush.console()
+  
+  # Read data
+  print("Reading data")
+  
+  readin = fetch_data(db = db, bspid = paste0("DB", subbspid), dataset = training_characteristics[["dataset"]]) |>
+    dplyr::mutate_if(is.character, factor)
+  
+  print(readin[1:6, 1:6])
+  print(nrow(readin))
+  print("...")
+  
+  # Skim data
+  training_characteristics[["skim"]] = readin |> skimr::skim()
+  
+  # Fit one random forest per subbspid and persist artifacts.
+  
+  print("Starting RF model fitting")
+  print(paste("Processing bsp_id:", subbspid))
+  
+  tryCatch({
+    rf = damageRF::rf3(bspid = subbspid, prep = readin, target = "bsp_id", n = 1000, trees = 1000, n_boots = 3)
+    saveRDS(rf, file.path(training_characteristics[["dataset_out_dir"]], paste0("rf_", subbspid, ".rds")))
+    
+    training_characteristics[["metrics"]][[subbspid]] = rf@metrics
+    training_characteristics[["size"]][[subbspid]] = rf@size
+    
+    flush.console()
+  }, error = function(e) {
+    training_characteristics[["errors"]][[subbspid]] = e 
+    message("Fehler bei BSP-ID ", subbspid, ": ", e$message)
+    flush.console()
+  })
+  
+  cat("end: ", format(Sys.time(), "%Y-%m-%d_%H-%M-%S"), "\n")
+  flush.console()
+  
+  sink(type = "message")
+  sink()
+  
+  close(log_con)
+  
+  training_characteristics[["end"]] = format(Sys.time(), "%H:%M:%S %d.%m.%Y")
+
+}
+
+# Training Report
+
+print("Report")
+
+# Collect saved RF model files for the final report plots.
+files = list.files(training_characteristics[["dataset_out_dir"]])
+rf_files = startsWith(files, "rf_") & endsWith(files, ".rds")
+rf_files = list.files(training_characteristics[["dataset_out_dir"]], full.names = TRUE)[rf_files]
+training_characteristics[["rf_files"]] = rf_files
+
+rmarkdown::render(
+  input = "report.Rmd",
+  output_format = "pdf_document",
+  output_file = "report.pdf",
+  output_dir = training_characteristics[["dataset_out_dir"]], 
+  params = training_characteristics,
+  envir = new.env()
+)
+
+saveRDS(
+  training_characteristics, 
+  file.path(training_characteristics[["dataset_out_dir"]], "training_characteristics.rds")
+)
+
+# Disconnect from database
+RSQLite::dbDisconnect(db)
+```

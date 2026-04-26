@@ -1,0 +1,85 @@
+---
+title: "dwd_insight"
+author: "JW"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Setup
+
+#### Environment
+
+```{r ENV, echo=FALSE}
+dotenv::load_dot_env(".env")
+```
+
+#### CONSTANTS
+
+```{r}
+dwd_data_path = setNames(dir("data/dwd", full.names = TRUE), dir("data/dwd"))
+bkg_data_path = "data/bkg/dgm1000.utm32s.xyzascii/dgm1000.utm32s.xyzascii/dgm1000/"
+
+hyras_crs = "+proj=laea +lat_0=52 +lon_0=10 +x_0=4321000 +y_0=3210000 +ellps=GRS80 +units=m +no_defs"
+annualdata_crs = "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=3500000 +y_0=0 +ellps=bessel +units=m +no_defs"
+```
+
+#### Data
+
+```{r Data}
+# Basedata
+db = RSQLite::dbConnect(RSQLite::SQLite(), "output/basedata.db")
+basedata = RSQLite::dbReadTable(db, "Basedata")
+```
+
+```{r Dataset}
+# Working dataset
+dataset = basedata |>
+  tidyr::unite("Bruecke", ort, baujahr, sep = "_", remove = FALSE) |> 
+  tidyr::unite("schaden", ort, baujahr, tbwnr, schad_id, schaden, sep = "_", remove = FALSE) |> 
+  dplyr::mutate(alter = prufjahr - baujahr) |> 
+  data.table::as.data.table()
+```
+
+## Positioning
+
+#### Geocode
+
+```{r Addresses}
+# Bundeslaender decoding
+bundeslaender <- setNames(
+  c(
+    "Baden-Württemberg", "Bayern", "Berlin", "Brandenburg", "Bremen", "Hamburg",
+    "Hessen", "Mecklenburg-Vorpommern", "Niedersachsen","Nordrhein-Westfalen",
+    "Rheinland-Pfalz", "Saarland", "Sachsen", "Sachsen-Anhalt", 
+    "Schleswig-Holstein", "Thüringen"
+  ),  c(
+    "BW", "BY", "BE", "BB", "HB", "HH", "HE", "MV", "NI", "NW", "RP", "SL",
+    "SN", "ST", "SH", "TH"
+))
+
+# Create search string
+addresses = unique(
+  paste0(
+    "'", dataset$Bruecke, "'", " in ", dataset$ort, " (", 
+    unname(bundeslaender[dataset$lage_bl]), ", Deutschland)"
+  )
+)
+```
+
+```{r Geocode, eval = FALSE}
+# # Search
+# res = data.frame(address = addresses) |>
+#   tidygeocoder::geocode(
+#     address = address,
+#     method ="here",
+#     full_results = TRUE
+#   )
+
+# # Save result as rds
+# saveRDS(res_df, file = "data/here/here.rds")
+
+# # Save result as csv
+# res_df |> 
+#   dplyr::select(dplyr::where(~ is.character(.) | is.numeric(.))) |> 
+#   write.csv2("data/here/here.csv", row.names = FALSE)
+```

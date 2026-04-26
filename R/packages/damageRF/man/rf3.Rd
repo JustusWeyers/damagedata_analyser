@@ -13,7 +13,7 @@ rf3(
   grid = 11,
   n_boots = 30,
   seed = NA,
-  tune_metric = "pr_auc"
+  tune_metric = "f_meas"
 )
 }
 \arguments{
@@ -33,7 +33,7 @@ rf3(
 
 \item{seed}{Optional: seed}
 
-\item{tune_metric}{Optional: Tuning metric "roc_auc", "pr_auc", "accuracy" etc.}
+\item{tune_metric}{Optional: Tuning metric "roc_auc", "pr_auc", "accuracy" "f_meas_weighted", etc.}
 }
 \value{
 Object of class RF

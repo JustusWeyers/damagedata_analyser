@@ -1,0 +1,229 @@
+---
+title: "BSP-ID Transitions"
+author: "JW"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: null
+runtime: shiny
+---
+
+## Setup
+
+```{css, echo=FALSE}
+body {
+  max-width: 100% !important;
+  margin-left: 10px;
+  margin-right: 10px;
+}
+
+.container {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+```
+
+```{r, echo = FALSE}
+shiny::fluidPage()
+```
+
+#### Run in console
+
+```{r, include = FALSE}
+# rmarkdown::run("R/transition_matrices_interactive.Rmd")
+```
+
+#### Libraries
+
+```{r Libraries}
+library(patchwork)
+```
+
+#### Read Data
+
+```{r ReadData, cache=TRUE, warning = FALSE, eval = TRUE}
+db = DBI::dbConnect(RSQLite::SQLite(), here::here("data/db/fulldata.db"))
+fulldata = DBI::dbReadTable(db, "fulldata")
+```
+
+#### Functions
+
+```{r Functions, eval = TRUE}
+files = list.files(here::here("R/"), full.names = TRUE)
+sapply(files[startsWith(basename(files), "fct_")], source)
+sapply(files[startsWith(basename(files), "hlp_")], source)
+```
+
+## Datawrangling
+
+#### Create and match unique damage ids
+
+```{r, eval = TRUE}
+fulldata_id = fulldata |> 
+  dplyr::mutate(id = paste(ort, baujahr, laenge, tbwnr, schad_id, sep = "_")) |> 
+  dplyr::relocate(id)
+
+ids = fulldata_id |> 
+  dplyr::distinct(id) |> 
+  dplyr::mutate(hash_id = ids::random_id(dplyr::n(), bytes = 5))
+
+# Match ids to fulldata
+fulldata_id$id = ids$hash_id[match(fulldata_id$id, ids$id)]
+
+# Test duplicates
+any(duplicated(ids$hash_id))
+```
+
+#### Working dataset
+
+```{r DataPreparation, cache=TRUE, eval = FALSE}
+data = fulldata_id |> 
+  dplyr::select(id, prufjahr, bsp_id) |> 
+  dplyr::filter(dplyr::if_all(dplyr::everything(), ~ !is.na(.))) |> 
+  dplyr::mutate(class1 = sub("-.*", "", bsp_id)) |> 
+  dplyr::filter(!stringr::str_detect(bsp_id, "99"))
+```
+
+#### Count transitions
+
+```{r TransitionCounts, cache=TRUE, eval = FALSE}
+class1s = sort(unique(data$class1))
+transition_counts = lapply(class1s, count_transitions)
+transition_counts = setNames(transition_counts, class1s)
+transition_counts = purrr::keep(transition_counts, ~ !(nrow(.) == 0 & ncol(.) == 0))
+transition_counts_freq = transition_counts[order(sapply(transition_counts, sum), decreasing = TRUE)]
+```
+
+#### Cache results
+
+```{r Cache(d) results}
+# saveRDS(transition_counts, "R/rds/transition_counts.rds")
+# saveRDS(transition_counts_freq, "R/rds/transition_counts_freq.rds")
+# saveRDS(fulldata_id, "R/rds/fulldata_id.rds")
+
+fulldata = readRDS(here::here("R/rds/fulldata_id.rds"))
+transition_counts = readRDS(here::here("R/rds/transition_counts.rds"))
+transition_counts_freq = readRDS(here::here("R/rds/transition_counts_freq.rds"))
+```
+
+## Visualizations
+
+```{r}
+# bspids_of_interest = c("002", "006", "021", "025", "230", "233", "241", "259")
+bspids_of_interest = names(transition_counts_freq)
+```
+
+
+#### Tab Box
+
+```{r}
+shinydashboard::tabBox(
+  width = 12,
+  title = "",
+  shiny::tabPanel(
+    "static",
+    shiny::uiOutput("plot_list")
+  ),
+  shiny::tabPanel(
+    "interactive",
+    
+    shiny::fluidRow(
+      shiny::selectInput("bspid", "BSPID", bspids_of_interest),
+    ),
+    shiny::fluidRow(
+      shiny::column(12, ggiraph::girafeOutput("tiles"))
+    ),
+    shiny::fluidRow(
+      shiny::column(12, gt::gt_output("fulldata_spec"))
+    )
+    
+  )
+)
+```
+
+#### Plot transition frequencies
+
+```{r TransitPlot, echo = FALSE, fig.width = 10, fig.height = 5, eval = FALSE}
+# Layout
+layout(matrix(c(1,2), nrow = 1, byrow = TRUE))
+
+# Plot with self-transitions
+pts = sort(sapply(transition_counts, sum), decreasing = TRUE)
+count_plt(pts, n = 8, title = "Transitions + Self-Transitions")
+
+# Plot without self-transitions
+null_diag_sum = function(mat) {diag(mat) = 0; return(sum(mat))}
+pts = sort(sapply(transition_counts, null_diag_sum), decreasing = TRUE)
+count_plt(pts, n = 7, title = "Transitions")
+```
+
+#### Output of static heatmaps
+
+```{r PlotHeatmaps, echo = FALSE}
+plots = lapply(
+  X = bspids_of_interest,
+  FUN = transition_martix_plots,
+  freq = transition_counts_freq,
+  fulldata = fulldata_id
+)
+
+# Temporarily cache
+saveRDS(plots, here::here("R/rds/plots.rds"))
+# plots = readRDS("rds/plots.rds")
+```
+
+```{r StaticTransMatrix, echo = FALSE}
+# Matrix plots in shiny
+lapply(seq_along(plots), function(i) {
+  output[[paste0("plot_", i)]] = shiny::renderPlot(plots[[i]][3])
+})
+
+output$plot_list = shiny::renderUI({
+  
+  shiny::tagList(
+    purrr::map(seq_along(plots), ~plotOutput(paste0("plot_", .x), height = 700))
+  )
+})
+```
+
+#### Output and observation of interactive tmats
+
+```{r InteractiveTmats, echo = FALSE}
+output$tiles = ggiraph::renderGirafe({
+  p = plots[[which(input$bspid == names(transition_counts_freq))]]
+  p4 = p[["heatmap_interactive"]]
+  return(p4)
+})
+
+clicked = shiny::reactive({
+  sel = input$tiles_selected
+  if(!is.null(sel)){
+    parts = strsplit(sel, "_")[[1]]
+    list(a = parts[1], b = parts[2])
+  } else {
+    NULL
+  }
+})
+```
+
+#### Output of data table for transitions
+
+```{r, echo = FALSE}
+output$fulldata_spec = gt::render_gt({
+  shiny::req(clicked())
+  fulldata_id  |>
+    dplyr::mutate(alter = prufjahr - baujahr) |>
+    dplyr::arrange(id, alter)  |>
+    dplyr::group_by(id)  |>
+    dplyr::filter(any(bsp_id == clicked()$a & dplyr::lead(bsp_id) == clicked()$b)) |>
+    dplyr::select(ort, baujahr, tbwnr, schad_id, alter, bsp_id) |>
+    dplyr::slice_head(n = 70) |>
+    gt::gt() |>
+    gt::tab_options(table.width = "100%")
+})
+```
+
+```{r}
+DBI::dbDisconnect(db)
+```
+

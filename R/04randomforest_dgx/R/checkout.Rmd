@@ -1,0 +1,32 @@
+---
+title: "Checkout rf2"
+author: "JW"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+# Load local package sources for development-time plotting checks.
+devtools::load_all("C:/Users/justu/Desktop/damagedata_analyser/R/packages/damageRF")
+```
+
+```{r}
+# Discover all model artifacts and keep only RF `.rds` files.
+all_output_files = list.files("output/rf2/", recursive = TRUE, full.names = TRUE)
+rds_files = all_output_files[endsWith(all_output_files, ".rds")]
+rf2_files = rds_files[startsWith(basename(rds_files), "rf_")]
+```
+
+```{r}
+# Sample a subset of fitted models for quick manual inspection.
+all_rf2s = lapply(sample(rf2_files, 5), readRDS)
+```
+
+```{r}
+# Plot one sampled model result.
+i = 1
+print(rf2_files[i])
+damageRF::plotter(all_rf2s[[i]])
+```
+
+

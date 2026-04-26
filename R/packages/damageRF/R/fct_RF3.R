@@ -9,12 +9,12 @@
 #' @param grid Optional: tuning grid
 #' @param n_boots Optional: Number of resamples
 #' @param seed Optional: seed
-#' @param tune_metric Optional: Tuning metric "roc_auc", "pr_auc", "accuracy" etc.
+#' @param tune_metric Optional: Tuning metric "roc_auc", "pr_auc", "accuracy" "f_meas_weighted", etc.
 
 #' @return Object of class RF
 
 #' @export
-rf3 = function(bspid, prep, target, n = NA, trees = 1000, grid = 11, n_boots = 30, seed = NA, tune_metric = "pr_auc") {
+rf3 = function(bspid, prep, target, n = NA, trees = 1000, grid = 11, n_boots = 30, seed = NA, tune_metric = "f_meas") {
 
   ############
   ### Seed ###
@@ -38,7 +38,7 @@ rf3 = function(bspid, prep, target, n = NA, trees = 1000, grid = 11, n_boots = 3
   #######################
 
   if ("target" %in% colnames(prep)) {
-    stop("Error in rf2: Found 'target' in colnames(prep)")
+    stop("Error in rf3: Found 'target' in colnames(prep)")
   }
 
   # Set name of target variable to "target"
@@ -60,18 +60,23 @@ rf3 = function(bspid, prep, target, n = NA, trees = 1000, grid = 11, n_boots = 3
     prep_1bspid = prep_1bspid[1:n,]
   }
 
-  # Delete target's with less than two entries
+  # Delete target's with less than 100 entries
   prep_1bspid = prep_1bspid |>
     dplyr::group_by(target) |>
-    dplyr::filter(dplyr::n() > 2) |>
+    dplyr::filter(dplyr::n() > 100) |>
     dplyr::ungroup()
 
   # Calculate max_target
-  prep_1bspid = prep_1bspid |>
-    dplyr::group_by(schaden) |>
-    dplyr::mutate(max_target = max(target)) |>
-    dplyr::ungroup() |>
-    dplyr::mutate(max_target = factor(max_target))
+  if (is.numeric(prep_1bspid$target)) {
+    prep_1bspid = prep_1bspid |>
+      dplyr::group_by(schaden) |>
+      dplyr::mutate(max_target = max(target)) |>
+      dplyr::ungroup() |>
+      dplyr::mutate(max_target = factor(max_target))
+  } else {
+    prep_1bspid = prep_1bspid |>
+      dplyr::mutate(max_target = factor(prep_1bspid$target))
+  }
 
   # Get gini coefficient
   gini = DescTools::Gini(prop.table(table(as.factor(prep_1bspid$target))))
@@ -85,9 +90,10 @@ rf3 = function(bspid, prep, target, n = NA, trees = 1000, grid = 11, n_boots = 3
     dplyr::count(target, name = "n_class") |>
     dplyr::mutate(
       K = dplyr::n(),
-      N = sum(n_class),
-      weight = N / (K * n_class)
+      N = sum(n_class)
     ) |>
+    # dplyr::mutate(weight = N / (K * n_class) |>
+    dplyr::mutate(weight = sqrt(N / (K * n_class))) |>
     dplyr::select(target, weight)
 
   prep_1bspid = prep_1bspid |>
@@ -101,7 +107,7 @@ rf3 = function(bspid, prep, target, n = NA, trees = 1000, grid = 11, n_boots = 3
 
   print("Splitting")
 
-  for (i in 1:100) {
+  for (i in 1:1000) {
 
     # Initial split
     data_split = rsample::group_initial_split(
@@ -128,14 +134,13 @@ rf3 = function(bspid, prep, target, n = NA, trees = 1000, grid = 11, n_boots = 3
     if (identical(levels(train_data_fac$target), levels(test_data_fac$target))) {
       break
     } else {
-      print(paste0("Redo Split ", i, "/100"))
+      if (i %% 100 == 0) {
+        print(paste0("Redo Split ", i, "/100"))
+      }
       seed = 1000 + i
       set.seed(seed)
     }
   }
-
-  print(table(train_data_fac$target))
-  print(table(test_data_fac$target))
 
   ##################
   ### Resampling ###
@@ -196,6 +201,16 @@ rf3 = function(bspid, prep, target, n = NA, trees = 1000, grid = 11, n_boots = 3
 
   print("Tuning")
 
+  f1_weighted <- function(data, truth, estimate, ...) {
+    yardstick::f_meas(
+      data = data,
+      truth = !!rlang::enquo(truth),
+      estimate = !!rlang::enquo(estimate),
+      estimator = "macro_weighted",
+      ...
+    )
+  }
+
   # Tune
   ranger_tune = tune::tune_grid(
     ranger_workflow,
@@ -206,7 +221,7 @@ rf3 = function(bspid, prep, target, n = NA, trees = 1000, grid = 11, n_boots = 3
       yardstick::pr_auc,
       yardstick::roc_auc,
       yardstick::accuracy,
-      yardstick::brier_class
+      yardstick::f_meas
     )
   )
 

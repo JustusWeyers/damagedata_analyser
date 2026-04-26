@@ -1,0 +1,274 @@
+---
+title: "dataset"
+author: "JW"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Setup
+
+#### Libraries
+
+#### Functions
+
+```{r Functions, eval = TRUE}
+files = list.files(here::here("R/"), full.names = TRUE)
+sapply(files[startsWith(basename(files), "fct_")], source)
+sapply(files[startsWith(basename(files), "hlp_")], source)
+```
+
+## Data
+
+#### Clean up fulldata
+
+```{r ReadData, cache=TRUE, warning = FALSE, eval = FALSE}
+# Read fulldata
+db = DBI::dbConnect(RSQLite::SQLite(), here::here("../01insight/data/db/fulldata.db"))
+fulldata = DBI::dbReadTable(db, "fulldata")
+DBI::dbDisconnect(db)
+
+# Filter Rows
+fulldata_clean = fulldata |>
+  dplyr::filter(!is.na(bsp_id)) |> 
+  dplyr::filter(!is.na(bauwerksname)) |> 
+  dplyr::filter(!stringr::str_detect(bsp_id, "99")) |> 
+  dplyr::filter(pra %in% c("H", "H1", "H", "E")) |> 
+  dplyr::filter(prufjahr-baujahr >= 0) |> 
+  dplyr::filter(baujahr >= 1800) |> 
+  dplyr::filter(baujahr <= 2025) |> 
+  unique()
+
+# Mutate some columns
+fulldata_clean = fulldata_clean |> 
+  dplyr::mutate(
+    hoechst_sachverhalt_oben =
+      trimws(stringr::str_remove(hoechst_sachverhalt_oben, ".*: "))
+  ) |> 
+  dplyr::mutate(
+    hoechst_sachverhalt_oben = 
+      stringr::str_remove(hoechst_sachverhalt_oben, "\\s.*")
+  ) |> 
+  dplyr::mutate(
+    alter = prufjahr - baujahr
+  )
+
+# Create id for every damage
+fulldata_clean = fulldata_clean |> 
+  dplyr::mutate(id = paste(ort, baujahr, laenge, tbwnr, schad_id, sep = "_")) |> 
+  dplyr::relocate(id)
+
+ids = fulldata_clean |> 
+  dplyr::distinct(id) |> 
+  dplyr::mutate(hash_id = paste0("id", ids::random_id(dplyr::n(), bytes = 6)))
+
+# Match ids to basedata
+fulldata_clean$id = ids$hash_id[match(fulldata_clean$id, ids$id)]
+
+# Test duplicates
+any(duplicated(ids$hash_id))
+
+# Select columns
+fulldata_clean = fulldata_clean |> 
+  dplyr::select(
+    
+    # "Identifikation"
+    id, ort, baujahr, tbwnr, schad_id, bsp_id, 
+    
+    # Prädiktoren
+    bauwerksart_text, stadium_text, konstruktion, laenge, breite, flaeche,
+    statisches_system_laengs, statisches_system_quer, hoechst_sachverhalt_oben, 
+    jast_lage, br_bauwerkswinkel, br_bw_winkel_richtung, laengenklasse, 
+    br_maximale_laengsneigung, lage_bl , schaden, bauteil, bautlgrupp, zwgruppe, 
+    menge_all, prufjahr, alter, ueberbau, feld, quer, hoch, 
+    
+    # Zielvariablen
+    zustandsnote, zustandsnotenklasse, substanzkennzahl, bewert_s, bewert_v, 
+    bewert_d, max_s, max_v, max_d 
+    
+  )
+
+save_dataset(fulldata_clean, "output/fulldata_clean.db")
+```
+
+#### Join BAST data (brueckenstatistik.csv)
+
+```{r}
+# Read fulldata_clean
+db = DBI::dbConnect(RSQLite::SQLite(), here::here("output/fulldata_clean.db"))
+fulldata_clean = DBI::dbReadTable(db, "fulldata_clean")
+DBI::dbDisconnect(db)
+
+# Keys used for joining BAST data and fulldata_clean
+keys = c("ort", "lage_bl", "baujahr", "tbwnr", "laenge", "breite", "flaeche")
+
+# Fetch BAST data
+bast_data = read.csv2(here::here("data/bast/brueckenstatistik.csv")) |> 
+  dplyr::rename(lage_bl = bl) |> 
+  dplyr::mutate(laenge = as.numeric(laenge)) |> 
+  dplyr::mutate(dplyr::across(c(laenge, breite), as.numeric)) |> 
+  dplyr::mutate(dplyr::across(dplyr::where(is.character), trimws)) |> 
+  dplyr::mutate(x_y = stringr::str_replace(x_y, "POINT \\(([^ ]+) ([^ ]+)\\)", "\\1/\\2")) |> 
+  dplyr::rename(X.Y.UTM.32N = x_y) |> 
+  dplyr::select(dplyr::all_of(c(
+    "ort", "lage_bl", "baujahr", "tbwnr", "laenge", "breite", "flaeche", 
+    "bauwerksname", "trag_l_idx", "X.Y.UTM.32N", "amt", "meisterei", "kreis"
+  ))) |> 
+  dplyr::group_by(dplyr::across(dplyr::all_of(keys))) |>
+  dplyr::filter(dplyr::n() == 1) |>
+  dplyr::ungroup()
+  
+# Join
+fulldata_bast = dplyr::left_join(
+  x = fulldata_clean, 
+  y = bast_data, 
+  by = keys
+)
+
+skimr::skim(fulldata_bast)
+
+save_dataset(fulldata_bast, "output/fulldata_bast.db")
+```
+
+
+```{r}
+# Controll
+
+# sk = skimr::skim(fulldata_bast)
+# min(sk$complete_rate[sk$skim_variable %in% colnames(bast_data)])
+
+coords = fulldata_bast |>
+  dplyr::filter(!is.na(X.Y.UTM.32N)) |>
+  dplyr::select(X.Y.UTM.32N, ort) |> 
+  dplyr::distinct()
+
+map_data = coords |> 
+  tidyr::separate(col = X.Y.UTM.32N, sep = "/", into = c("long", "lat")) |>
+  dplyr::mutate(
+    long = as.numeric(long),
+    lat = as.numeric(lat)
+  ) |>
+  sf::st_as_sf(coords = c("long", "lat"), crs = 25832) |>
+  sf::st_transform(4326)
+
+leaflet::leaflet(map_data) |>
+  leaflet::addTiles() |>
+  leaflet::addCircleMarkers(
+    label = ~ort
+  )
+```
+
+## Datawrangling
+
+#### Create and match unique damage ids
+
+```{r}
+devtools::load_all("../packages/dwddata")
+
+points = map_data |> terra::vect()
+
+hyras = methods::new(
+  "NCSet", 
+  path = "../01insight/data/dwd/hyras", 
+  name = "hyras",
+  years = 1951:2025,
+  crs = "+proj=laea +lat_0=52 +lon_0=10 +x_0=4321000 +y_0=3210000 +ellps=GRS80 +units=m +no_defs"
+)
+  
+icedays = methods::new(
+  "ASCSet", 
+  name = "icedays",
+  path = "../01insight/data/dwd/icedays", 
+  years = 1951:2024,
+  crs = "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=3500000 +y_0=0 +ellps=bessel +units=m +no_defs"
+)
+
+summerdays = methods::new(
+  "ASCSet", 
+  path = "../01insight/data/dwd/summerdays", 
+  name = "summerdays",
+  years = 1951:2025,
+  crs = "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=3500000 +y_0=0 +ellps=bessel +units=m +no_defs"
+)
+
+elevation = methods::new(
+  "XYZSet", 
+  path = "../01insight/data/bkg/dgm1000.utm32s.xyzascii/dgm1000.utm32s.xyzascii/dgm1000",
+  name = "ele",
+  years = 2019,
+  crs = readLines(
+    "../01insight/data/bkg/dgm1000.utm32s.xyzascii/dgm1000.utm32s.xyzascii/dgm1000/dgm1000_utm32s.prj"
+  )[1]
+)
+
+mystats_hyras = dwddata::geo_stats(hyras, points = points)
+mystats_icedays = dwddata::geo_stats(icedays, points = points)
+mystats_summerdays = dwddata::geo_stats(summerdays, points = points)
+mystats_elevation = dwddata::geo_stats(elevation, points = points)
+
+split_metrics = function(stats_list) {
+  metric_matrices <- list()
+  for (stat in stats_list) {
+    years <- names(stat)
+    metrics <- colnames(stat[[1]])
+    for (m in metrics) {
+      mat <- sapply(stat, function(df) df[,m])
+      rownames(mat) <- rownames(stat[[1]])
+      colnames(mat) <- years
+      metric_matrices[[m]] <- mat
+    }
+  }
+  return(metric_matrices)
+}
+
+res = split_metrics(list(mystats_hyras, mystats_icedays, mystats_summerdays))
+
+red = lapply(seq_along(res), function(i) {
+  df = res[[i]]
+  result <- data.frame(
+    rowMin  = apply(df, 1, min, na.rm = TRUE),
+    rowMean = rowMeans(df, na.rm = TRUE),
+    rowMax  = apply(df, 1, max, na.rm = TRUE)
+  )
+  colnames(result) = paste0(c("min_", "mean_", "max_"), names(res)[i])
+  return(result)
+})
+
+clim = do.call(cbind, red)
+clim[!is.finite(as.matrix(clim))] <- 0
+pca = prcomp(clim, scale = TRUE, center = TRUE)
+
+fulldata_bast_clim = dplyr::left_join(
+  fulldata_bast,
+  coords |> 
+    dplyr::select(-ort) |> 
+    dplyr::bind_cols(clim) |> 
+    dplyr::mutate(clim_pc1 = pca$x[, 1]) |> 
+    dplyr::mutate(clim_pc2 = pca$x[, 2]) |> 
+    dplyr::distinct(),
+  by = "X.Y.UTM.32N"
+)
+
+# Last steps
+fulldata_bast_clim_final = fulldata_bast_clim |> 
+  tidyr::separate(X.Y.UTM.32N, sep = "/", into = c("x", "y"))
+
+save_dataset(fulldata_bast_clim_final, "output/fulldata_bast_clim.db")
+```
+
+
+```{r}
+sf_df = fulldata_bast_clim |> 
+  dplyr::slice_sample(n = 9999) |>
+  dplyr::filter(!is.na(X.Y.UTM.32N)) |> 
+  tidyr::separate(X.Y.UTM.32N, sep = "/", into = c("x", "y")) |> 
+  sf::st_as_sf(coords = c("x", "y"))
+
+ggplot2::ggplot(sf_df, ggplot2::aes(color = clim_pc1)) +
+  ggplot2::geom_sf() +
+  ggplot2::scale_color_gradient(high = "red", low = "blue") +
+  ggplot2::theme_minimal()
+
+ggplot2::ggplot(sf_df, ggplot2::aes(color = factor(trag_l_idx))) +
+  ggplot2::geom_sf() +
+  ggplot2::theme_minimal()
+```

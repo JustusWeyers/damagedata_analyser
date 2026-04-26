@@ -1,7 +1,6 @@
 #' combined_ROC_PR_plot method
 #'
 #' @param self self
-#' @export
 
 setGeneric("combined_ROC_PR_plot", function(self) standardGeneric("combined_ROC_PR_plot"))
 

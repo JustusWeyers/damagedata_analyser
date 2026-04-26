@@ -9,11 +9,10 @@ catch_console = function(o) {
   return(out)
 }
 
+# Metrics data.frame from classification results
 metrics_df = function(class, pred) {
 
-  pred$.pred_class <- factor(pred$.pred_class, levels = levels(pred$truth))
-
-  # print(paste("### Class", class))
+  pred$.pred_class = factor(pred$.pred_class, levels = levels(pred$truth))
 
   # Real postives
   P = nrow(pred[pred$truth == class,])
@@ -72,17 +71,7 @@ txt_spacer = function(attr, val, len = 23) {
 }
 
 textplotter = function(txt){
-  # Surrounding rectangle
-
-  # label_grob <- grid::roundrectGrob(
-  #   x = 0.5, y = 0.5,
-  #   width = 1, height = 1,
-  #   r = grid::unit(0.5, "line"),
-  #   gp = grid::gpar(fill = "#ffffff", col = "black", lwd = 1)
-  # )
-
   ggplot2::ggplot() +
-    # ggplot2::annotation_custom(label_grob) +
     ggplot2::annotate(
       "text",
       x = 0.05, y = 0.95,
@@ -107,10 +96,8 @@ tableplotter = function(df) {
       family = "mono",
       size = 4,
       hjust = 0.5, vjust = 0.5,
-      # label.size = 0.5,
       fill = "#f0f0f0",
       label.r = grid::unit(0.1, "lines")
     ) +
     ggplot2::theme_void()
 }
-

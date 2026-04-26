@@ -1,0 +1,120 @@
+---
+title: "BSP-ID Transitions"
+author: "JW"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Setup
+
+##### Read Data
+
+```{r ReadData, cache=TRUE, warning = FALSE}
+db = DBI::dbConnect(RSQLite::SQLite(), "../../01insight/data/db/fulldata.db")
+fulldata = DBI::dbReadTable(db, "fulldata") |> 
+    dplyr::distinct() # -> eig. 01insight ....
+```
+
+## Functions
+
+```{r Functions}
+
+# Prüft, ob v kleiner Vektor in ref als Teilabschnitt vorkommt
+is_subseq <- function(v, ref) {
+  n <- length(v)
+  ref_len <- length(ref)
+  if(n > ref_len) return(FALSE)
+  
+  # Alle Startpositionen prüfen
+  any(sapply(1:(ref_len - n + 1), function(i) {
+    all(ref[i:(i+n-1)] == v)
+  }))
+}
+
+doit = function(bspid, fulldata) {
+  
+  db = DBI::dbConnect(RSQLite::SQLite(), paste0("../output/pathdbs/DB", bspid, ".db"))
+
+  # Data preparation
+  fulldata_mod = fulldata |> 
+    dplyr::mutate(class1 = stringr::str_extract(bsp_id, "^[^-]+")) |> 
+    dplyr::filter(class1 %in% bspid) |> 
+    dplyr::mutate(ID = paste(ort, baujahr, laenge, tbwnr, class1, schad_id, sep = "_")) |> 
+    dplyr::mutate(ID = as.integer(factor(ID))) |> 
+    dplyr::filter(!stringr::str_detect(bsp_id, "99"))
+  
+  data = fulldata_mod|> 
+    dplyr::select(ID, ort, baujahr, laenge, tbwnr, class1, schad_id, prufjahr, bsp_id) |> 
+    dplyr::filter(dplyr::if_all(dplyr::everything(), ~ !is.na(.))) |> 
+    dplyr::select(ID, prufjahr, bsp_id) |> 
+    dplyr::mutate(class1 = sub("-.*", "", bsp_id))
+  
+  grouped = data |>
+    dplyr::arrange(ID, prufjahr) |>
+    dplyr::summarise(
+      path = list(rle(bsp_id)$values),
+      path_string = paste(rle(bsp_id)$values, collapse = ">"),
+      .by = ID
+    )
+  
+  # path_lengths = sapply(grouped$path, function(l) length(l))
+  
+  # df = data.frame(sort(table(grouped[sapply(grouped$path, length) == 10, "path_string"]), decreasing = TRUE))
+  
+  # ggplot2::ggplot(df[1:10,], ggplot2::aes(x = Var1, y = Freq)) +
+  #   ggplot2::geom_col() +
+  #   ggplot2::coord_flip()
+  
+  ref = unique(grouped[sapply(grouped$path, length) >= 2, c("path", "path_string")])
+
+  ref = ref[order(ref$path_string),]
+  row.names(ref) <- NULL
+  
+  paths = lapply(
+    X = ref$path,
+    FUN = function(pth) {
+      grouped[sapply(grouped$path, is_subseq, ref = pth),]
+      
+    }
+  )
+  
+  paths = setNames(paths, ref$path_string)
+  paths = paths[order(ref$path_string)]
+  
+  sub_ids = sort(unique(sapply(ref$path, function(p) p[[1]])))
+  
+  for (sub_id in sub_ids) {
+    all_rows = purrr::map_dfr(paths[startsWith(names(paths), sub_id)], ~ .x)
+    
+    sub_id_data = fulldata_mod |> 
+      dplyr::filter(ID %in% unique(all_rows$ID)) |> 
+      dplyr::select(-ID)
+    
+    DBI::dbWriteTable(db, paste0("DB", sub_id), sub_id_data)
+  }
+}
+```
+
+## Exploration
+
+#### Datawrangling
+
+```{r DataPreparation, cache=TRUE}
+
+bspids_of_interest = c("021", "025", "230", "233", "241", "259") # "002", "006"
+
+for (bspid in bspids_of_interest) {
+  doit(bspid = bspid, fulldata = fulldata)
+}
+
+```
+
+#### Have a look
+
+```{r}
+db = DBI::dbConnect(RSQLite::SQLite(), "../output/pathdbs/DB006.db")
+tablenames = DBI::dbListTables(db)
+length(tablenames)
+```
+
+

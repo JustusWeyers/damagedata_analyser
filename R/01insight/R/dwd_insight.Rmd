@@ -23,7 +23,7 @@ hyras_crs = "+proj=laea +lat_0=52 +lon_0=10 +x_0=4321000 +y_0=3210000 +ellps=GRS
 annualdata_crs = "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=3500000 +y_0=0 +ellps=bessel +units=m +no_defs"
 ```
 
-#### Data
+#### Workingdataset
 
 ```{r Data}
 # Basedata
@@ -44,72 +44,14 @@ dataset = basedata |>
   data.table::as.data.table()
 ```
 
-## Positioning
+#### Spatials
 
-#### Geocode
-
-```{r Addresses}
-# Bundeslaender decoding
-bundeslaender <- setNames(
-  c(
-    "Baden-Württemberg", "Bayern", "Berlin", "Brandenburg", "Bremen", "Hamburg",
-    "Hessen", "Mecklenburg-Vorpommern", "Niedersachsen","Nordrhein-Westfalen",
-    "Rheinland-Pfalz", "Saarland", "Sachsen", "Sachsen-Anhalt", 
-    "Schleswig-Holstein", "Thüringen"
-  ),  c(
-    "BW", "BY", "BE", "BB", "HB", "HH", "HE", "MV", "NI", "NW", "RP", "SL",
-    "SN", "ST", "SH", "TH"
-))
-
-# Create search string
-addresses = unique(
-  paste0(
-    "'", dataset$Bruecke, "'", " in ", dataset$ort, " (", 
-    unname(bundeslaender[dataset$lage_bl]), ", Deutschland)"
-  )
-)
-```
-
-```{r Geocode, eval = FALSE}
-# # Search
-# res = data.frame(address = addresses) |>
-#   tidygeocoder::geocode(
-#     address = address,
-#     method ="here",
-#     full_results = TRUE
-#   )
-
-# # Save result as rds
-# saveRDS(res_df, file = "data/here/here.rds")
-
-# # Save result as csv
-# res_df |> 
-#   dplyr::select(dplyr::where(~ is.character(.) | is.numeric(.))) |> 
-#   write.csv2("data/here/here.csv", row.names = FALSE)
-```
+Originating from geocoding_insight.Rmd
 
 ```{r LoadPositioningResults}
 positioning = read.csv2("data/here/here.csv")
 positioning = data.table::as.data.table(positioning, keep.rownames = "ID")
 ```
-
-#### Visualization
-
-```{r Leaflet}
-# Sample
-positioning_sample = positioning[sample(nrow(positioning), 100), ]
-
-# Map
-leaflet::leaflet() |> 
-  leaflet::addTiles() |> 
-  leaflet::addMarkers(
-    lng = positioning_sample$long, 
-    lat = positioning_sample$lat, 
-    popup = paste(positioning_sample$address)
-  )
-```
-
-#### Spatials
 
 ```{r Spatials}
 points = positioning |> 

@@ -3,6 +3,24 @@ title: "Random Forest Training Report"
 author: "JW"
 date: "`r Sys.Date()`"
 output: pdf_document
+params:
+  errors: NULL
+  wd: NULL
+  data_dir: NULL
+  output_dir: NULL
+  session_info: NULL
+  model_name: NULL
+  start: NULL
+  dataset: NULL
+  dataset_out_dir: NULL
+  skim: NULL
+  metrics: NULL
+  size: NULL
+  end: NULL
+  plots: NULL
+  rf_files: NULL
+  bspid: NULL
+  subbspids: NULL
 header-includes:
   - \usepackage{fvextra}
   - \RecustomVerbatimEnvironment{verbatim}{Verbatim}{breaklines=true}
@@ -10,34 +28,28 @@ header-includes:
 ---
 
 ```{r Helpers, echo=FALSE}
+# Shared plotting and PDF helper functions.
 source("helpers.R")
 ```
 
-```{r Dir, echo = FALSE}
-data_path = ""
-```
-
 ```{r Import, echo=FALSE}
-params = readRDS(
-  paste0(data_path, "training_characteristics.rds")
-)
-
+# Stack per-BSP metric tables and split BSP id into class columns.
 metrics_df = dplyr::bind_rows(params$metrics, .id = "bsp_id", ) |> 
   tidyr::separate(bsp_id, into = c("class1","class2","class3"), sep = "-", fill = "right", remove = FALSE)
 ```
 
 \newpage
 
-## Settion info
+## Session info
 
-```{r Settioninfo, echo=FALSE, results='asis', tidy=FALSE}
+```{r SessionInfo, echo=FALSE, results='asis', tidy=FALSE}
 si <- capture.output(params$session_info)
 cat(strwrap(si, width = 90), sep = "\n")
 ```
 
 \newpage
 
-## Training characteristics
+# Model training characteristics
 
 Dataset: `r params$dataset`
 
@@ -57,6 +69,8 @@ data.frame(
 ```
 
 \newpage
+
+# Results
 
 \section*{True Positive Rate}
 
@@ -119,38 +133,34 @@ metric_plot(
 
 \newpage
 
-```{r, fig.width = 14, fig.height = 5, out.width = "\\textwidth"}
-# Fetch RF .rds-files
-files = list.files(data_path)
-rf_files = startsWith(files, "rf_") & endsWith(files, ".rds")
-rf_files = list.files(data_path, full.names = TRUE)[rf_files]
+```{r BSPIDs, echo=FALSE, out.width="\\textwidth", fig.width=13, fig.height=5.9}
+# Plot model objects generated in the run directory.
+rf_files = params$rf_files # paste0("../", )
 
-n = 5 # length(rf_files)
-```
-
-```{r}
-par(mfrow = c(n, 1), mar = c(3, 4, 1, 1))
-
-for (f in rf_files[1:n]) {
-  plot(plotter(readRDS(f)))
+par(mfrow = c(length(rf_files), 1), mar = c(3, 4, 1, 1))
+for (f in rf_files) {
+  plot(damageRF::plotter(readRDS(f)))
 }
 ```
 
-
 \newpage
 
-## Model Dependencies
+# {damageRF} Dependencies
 
 ```{r DepPlot, echo=FALSE, out.width="\\textwidth", fig.width=7, fig.height=7}
+# Draw dependency graph for the `{damageRF}` package.
 par(mar = c(0,0,0,0))
+
+dep = suppressMessages({damageRF::dependency_report()})
+
 plot(
-  params$dependencies$tree$graph,
-  layout = params$dependencies$tree$coords,
-  vertex.label = params$dependencies$tree$labels,
+  dep$tree$graph,
+  layout = dep$tree$coords,
+  vertex.label = dep$tree$labels,
   vertex.label.cex = 0.3,
   vertex.label.color = "black",
   vertex.size = 7,
   edge.arrow.size = 0.2,
-  vertex.color = params$dependencies$tree$colors
+  vertex.color = dep$tree$colors
 )
 ```

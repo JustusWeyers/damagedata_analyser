@@ -1,7 +1,14 @@
 metric_plot = function(m, metric_title, metric_shrt) {
   
+  # Standardize incoming metric frame shape for plotting.
   colnames(m) = c("class", "n", "P", "metric", "bsp_id", "class1") 
   
+  # Use a near-square facet grid based on available classes.
+  facets = length(unique(m$class))
+  cols = ceiling(sqrt(facets))
+  rows = ceiling(facets / cols)
+  
+  # Panel 1: per-class bars with inline metric labels.
   p1 <- m |>
     dplyr::mutate(metric_sort = ifelse(is.na(metric), -Inf, metric)) |>
     ggplot2::ggplot(ggplot2::aes(
@@ -25,7 +32,7 @@ metric_plot = function(m, metric_title, metric_shrt) {
       y = "BSP-ID"
     ) +
     ggplot2::xlim(0, 1) +
-    ggplot2::facet_wrap(~ class, scales = "free_y") +
+    ggplot2::facet_wrap(~ class, scales = "free_y", nrow = rows, ncol = cols) +
     tidytext::scale_y_reordered() +
     ggplot2::scale_color_manual(values = c("low" = "gray60", "high" = "white")) +
     ggplot2::theme_bw() +
@@ -34,6 +41,7 @@ metric_plot = function(m, metric_title, metric_shrt) {
       text = ggplot2::element_text(size = 8)
     )
   
+  # Panel 2: ratio-vs-metric scatter with class markers.
   p2 = m |> 
     dplyr::filter(!is.na(metric) & !is.na(P/n)) |> 
     ggplot2::ggplot(ggplot2::aes(x = P/n, y = metric)) +
@@ -50,6 +58,7 @@ metric_plot = function(m, metric_title, metric_shrt) {
       text = ggplot2::element_text(size = 8)
     )
   
+  # Combine both panels into a single report figure.
   p = patchwork::wrap_plots(p1, p2, ncol = 2) # +
     # patchwork::plot_annotation(metric_title)
   
@@ -57,6 +66,7 @@ metric_plot = function(m, metric_title, metric_shrt) {
 }
 
 printer = function(filename, plots) {
+  # Render plots into a landscape PDF with two plots per page.
   pdf(filename, width = 15.0, height = 8.3)
   
   plots <- plots[!vapply(plots, is.null, logical(1))]

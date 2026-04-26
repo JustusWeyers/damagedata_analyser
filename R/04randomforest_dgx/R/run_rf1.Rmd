@@ -10,12 +10,14 @@ output: html_document
 #### Imports
 
 ```{r}
+# Load package functions used for model training.
 library(damageRF)
 ```
 
 #### Helpers
 
 ```{r}
+# Reuse plotting and PDF export helpers.
 source("helpers.R")
 ```
 
@@ -24,6 +26,7 @@ source("helpers.R")
 #### Training characteristics
 
 ```{r}
+# Store run metadata and outputs for reporting.
 training_characteristics = list(
   recipes = list(),
   errors = list(),
@@ -88,7 +91,7 @@ for (db_path in list.files(training_characteristics[["data_dir"]], full.names = 
   bspids = names(sort(table(readin$bsp_id), decreasing = TRUE))
   print(paste0("Found ", length(bspids), " unique bsp_ids."))
   
-  # Loop through bspids and fit random forest models
+  # Fit one random forest per BSP id and persist artifacts.
   print("Starting RF model fitting...")
   for (bspid in bspids) {
 
@@ -129,7 +132,7 @@ for (db_path in list.files(training_characteristics[["data_dir"]], full.names = 
   
   training_characteristics[["end"]] = format(Sys.time(), "%H:%M:%S %d.%m.%Y")
   
-  # Printer
+  # Build PDF plot appendix and serialized run metadata.
   
   training_characteristics[["dependencies"]] = damageRF::dependency_report()
   
@@ -141,7 +144,7 @@ for (db_path in list.files(training_characteristics[["data_dir"]], full.names = 
   saveRDS(training_characteristics, file.path(training_characteristics[["dataset_out_dir"]], "training_characteristics.rds"))
   
   rmarkdown::render(
-    input = "bericht.Rmd",
+    input = "report.Rmd",
     output_format = "pdf_document",
     output_file = file.path(training_characteristics[["dataset_out_dir"]], paste0("report.pdf")),
     params = training_characteristics,

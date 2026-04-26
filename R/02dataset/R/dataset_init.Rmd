@@ -1,5 +1,5 @@
 ---
-title: "02 Datasets"
+title: "02 Datasets - Initial"
 author: "JW"
 date: "`r Sys.Date()`"
 output: html_document
@@ -204,9 +204,9 @@ Spalte *inspektionszeitanteil* selbst wird entfernt.
 
 ```{r dataset3_1}
 dataset3_1 = dataset3 |>
-  dplyr::mutate(bewert_d_ha = bewert_d_ha * inspektionszeitanteil) |> 
-  dplyr::mutate(bewert_d_hm = bewert_d_hm * inspektionszeitanteil) |> 
-  dplyr::mutate(bewert_d_he = bewert_d_he * inspektionszeitanteil) |> 
+  dplyr::mutate(bewert_d_ha_weighted = bewert_d_ha * inspektionszeitanteil) |> 
+  dplyr::mutate(bewert_d_hm_weighted = bewert_d_hm * inspektionszeitanteil) |> 
+  dplyr::mutate(bewert_d_he_weighted = bewert_d_he * inspektionszeitanteil) |> 
   dplyr::select(-inspektionszeitanteil)
 
 save_dataset(dataset3_1, here::here("output/dataset3_1.db"))
@@ -223,9 +223,9 @@ Inspektionszeitanteil stärker gewichtet werden. Die Spalte
 
 ```{r dataset3_2}
 dataset3_2 = dataset3 |>
-  dplyr::mutate(bewert_d_ha = bewert_d_ha * inspektionszeitanteil**2) |> 
-  dplyr::mutate(bewert_d_hm = bewert_d_hm * inspektionszeitanteil**2) |> 
-  dplyr::mutate(bewert_d_he = bewert_d_he * inspektionszeitanteil**2) |> 
+  dplyr::mutate(bewert_d_ha_squared = bewert_d_ha * inspektionszeitanteil**2) |> 
+  dplyr::mutate(bewert_d_hm_squared = bewert_d_hm * inspektionszeitanteil**2) |> 
+  dplyr::mutate(bewert_d_he_squared = bewert_d_he * inspektionszeitanteil**2) |> 
   dplyr::select(-inspektionszeitanteil)
 
 save_dataset(dataset3_2, here::here("output/dataset3_2.db"))
@@ -464,8 +464,250 @@ save_dataset(datasetX_1, here::here("output/datasetX_1.db"))
 
 ## Dataset Y ('datasetY')
 
-```{r datasetY}
-# ...
+Die Datensätze Y sind von neuer Struktur. Es handelt sich um einzelne Datensätze, 
+für jeweils für eine "Start BSP-ID" deren Unterscheidungsmerkmal in einer neuen Zusammenstellung 
+der Zeilen besteht. Die einzelnen Tabellen der Top-Level bspids in /output/pathdbs werden
+zusammengefügt. Im anschluss müssen die Historischen **Schaden**, **Alter**, 
+historische und klimatische Prädiktoren neu ermittelt werden, da neue Einträge 
+durch neue BSP-IDs, die in den Pfaden auftreten hinzukommen.
+
+Die Datensäze für die Start BSP-IDs sind in der Datenbank 
+/output/pathdbs/MERGED.db zu finden. Dort ist auch eine Gesamttabelle, für die 
+die Prädiktoren bestimmt werden sollen, um sie dann auf die separaten Datensätze 
+zurückzumergen.
+
+```{r}
+# Read alldata-table from MERGEDDB.db
+db = DBI::dbConnect(RSQLite::SQLite(), "output/pathdbs/MERGEDB.db")
+
+# Read alldata table and remove already 
+alldata_new = DBI::dbReadTable(db, "alldata") |> 
+  dplyr::select(dplyr::all_of(colnames(basedata))) # |> 
+  # dplyr::anti_join(basedata)
+```
+
+Bestimmung der Prädiktoren wie zuvor:
+
+```{r}
+# Create columns "schaden" and "alter". Remove other target variables.
+alldata_new1 = alldata_new |> 
+  tidyr::unite(
+    "schaden", ort, baujahr, tbwnr, schad_id, schaden, sep = "_", 
+    remove = FALSE
+  ) |> 
+  dplyr::mutate(alter = prufjahr - baujahr) |> 
+  dplyr::select(
+    -zustandsnote, -zustandsnotenklasse, -substanzkennzahl, -bewert_s, 
+    -bewert_v, -max_s, -max_v, -max_d
+  )
+
+# Calculate historic predictors h3, h6, h9
+alldata_new_interp = alldata_new1 |> 
+  # Erst Duplikate in Prüfjahren durch Mittelwerte ersetzen
+  dplyr::group_by(schaden, prufjahr) |> 
+  dplyr::mutate(bewert_d_mean = mean(bewert_d, na.rm = TRUE)) |> 
+  dplyr::distinct(schaden, prufjahr, .keep_all = TRUE) |> 
+  # Dann innerhalb der Gruppen für dts interpolieren
+  dplyr::group_by(schaden) |> 
+  dplyr::group_modify(~ {
+    dts = c(3, 6, 9)
+    if (sum(!is.na(.x$bewert_d)) >= 2) {
+      for (dt in dts) {
+        .x[[paste0("bewert_d_h", dt)]] = round(
+          approx(
+            x = .x$prufjahr,
+            y = .x$bewert_d_mean,
+            xout = .x$prufjahr - dt,
+            rule = 1
+          )$y,
+          0
+        )
+      }
+    } else {
+      for (dt in dts) {
+        .x[, paste0("bewert_d_h", dt)] = NA
+      }
+    }
+    .x
+  }) |> 
+  dplyr::select(-bewert_d_mean) |> 
+  dplyr::ungroup()
+
+alldata_new_interp = alldata_new_interp |> 
+  dplyr::select(
+    c(
+      "schaden", "prufjahr", 
+      setdiff(colnames(alldata_new_interp), colnames(alldata_new1))
+    )
+  )
+
+alldata_new2 = alldata_new1 |>
+  dplyr::left_join(alldata_new_interp, by = c("schaden", "prufjahr"))
+
+
+# Calculate historic predictors ha, hm, he
+alldata_new2_interp = alldata_new2 |>
+  # Erst Duplikate in Prüfjahren durch Mittelwerte ersetzen
+  dplyr::group_by(schaden, prufjahr) |>
+  dplyr::mutate(bewert_d_mean = mean(bewert_d, na.rm = TRUE)) |>
+  dplyr::distinct(schaden, prufjahr, .keep_all = TRUE) |>
+
+  dplyr::mutate(
+    bewert_d_ha = NA_real_,
+    bewert_d_hm = NA_real_,
+    bewert_d_he = NA_real_
+  ) |>
+
+  # Dann innerhalb der Gruppen für dts interpolieren
+  dplyr::group_by(schaden) |>
+  dplyr::group_modify(~ {
+
+    for (i in 1:nrow(.x)) {
+      if (i == 1) {
+        .x[i, c("bewert_d_ha","bewert_d_hm","bewert_d_he")] <- round(.x$bewert_d_mean[1], 0)
+      } else {
+
+        min_j <- .x$prufjahr[1]
+        max_j <- .x$prufjahr[i]
+
+        xout_ha <- min_j + 0/3 * (max_j - min_j)
+        xout_hm <- min_j + 1/3 * (max_j - min_j)
+        xout_he <- min_j + 2/3 * (max_j - min_j)
+
+        y_vals <- .x$bewert_d_mean[1:i]
+
+        .x$bewert_d_ha[i] = round(approx(.x$prufjahr[1:i], y_vals, xout=xout_ha)$y,0)
+        .x$bewert_d_hm[i] = round(approx(.x$prufjahr[1:i], y_vals, xout=xout_hm)$y,0)
+        .x$bewert_d_he[i] = round(approx(.x$prufjahr[1:i], y_vals, xout=xout_he)$y,0)
+
+      }
+    }
+
+    return(.x)
+
+  }) |>
+  # Anteil der Inspektionszeit am Brückenalter
+  dplyr::mutate(inspektionszeitanteil = (prufjahr - min(prufjahr))/alter) |>
+  # Finish up
+  dplyr::select(-bewert_d_mean) |>
+  dplyr::ungroup()
+
+alldata_new2_interp = alldata_new2_interp |> 
+  dplyr::select(
+    c("schaden", "prufjahr", setdiff(colnames(alldata_new2_interp), colnames(alldata_new2)))
+  )
+
+alldata_new3 = alldata_new2 |>
+  dplyr::left_join(alldata_new2_interp, by = c("schaden", "prufjahr")) |> 
+  dplyr::mutate(bewert_d_ha_weighted = bewert_d_ha * inspektionszeitanteil) |> 
+  dplyr::mutate(bewert_d_hm_weighted = bewert_d_hm * inspektionszeitanteil) |> 
+  dplyr::mutate(bewert_d_he_weighted = bewert_d_he * inspektionszeitanteil) |> 
+  dplyr::mutate(bewert_d_ha_squared = bewert_d_ha * inspektionszeitanteil**2) |> 
+  dplyr::mutate(bewert_d_hm_squared = bewert_d_hm * inspektionszeitanteil**2) |> 
+  dplyr::mutate(bewert_d_he_squared = bewert_d_he * inspektionszeitanteil**2)
+
+save_dataset(alldata_new3, here::here("output/datasetY.db"))
+```
+
+Geocoding:
+
+```{r}
+# Source files from other project
+source("../01insight/R/geocoding_functional.R")
+dotenv::load_dot_env("../01insight/.env")
+
+basedata_addresses = unique(addresses(basedata))
+alldata_addresses = unique(addresses(alldata_new3))
+
+new_api_request = geocoding(
+  addresses = setdiff(alldata_addresses, basedata_addresses), 
+  api_key = NA # Sys.getenv("HERE_API_KEY")
+)
+
+address_df = read.csv2("C:../01insight/data/here/here.csv") |> 
+  dplyr::select(-c("houseNumberType", "scoring.fieldScore.houseNumber")) |> 
+  dplyr::mutate(here_address.postalCode = as.character(here_address.postalCode))
+  
+address_df2 = alldata_new3 |> 
+  dplyr::mutate(address = addresses(alldata_new3)) |> 
+  dplyr::select(dplyr::all_of(c("bauwerksart_text", "ort", "lage_bl", "address"))) |> 
+  dplyr::inner_join(new_api_request, by = "address") |> 
+  dplyr::select(dplyr::all_of(colnames(address_df)))
+
+address_df = address_df |> 
+  dplyr::bind_rows(address_df2) |> 
+  dplyr::distinct()
+
+write.csv2(address_df, "../01insight/data/here/here_datasetY.csv", row.names = FALSE)
+```
+
+Die Analyse der Klimadaten geschah separat in01insight_dwd_datasetY. Hier 
+erfolgt wie zuvor nur zie zusammenfassung der nested data.tables.
+
+```{r}
+# Datenbank
+db = RSQLite::dbConnect(
+  RSQLite::SQLite(), 
+  "output/datasetY.db"
+)
+
+# Einlesen des Basisdatensatzes
+datasetY = RSQLite::dbReadTable(db, "datasetY")
+
+# Read data from other project
+climate_data_nested_Y = readRDS("../01insight/data/dwd/climate_data_nested_datasetY.rds")
+climate_data_nested_Y = data.table::as.data.table(climate_data_nested_Y)
+
+# Unnest
+data.table::data.table(climate_data_nested_Y)[
+  ,
+  `:=`(
+    mean_maxT = sapply(data, function(df) mean(df$maxT, na.rm = TRUE)),
+    mean_minT = sapply(data, function(df) mean(df$minT, na.rm = TRUE)),
+    mean_diffT = sapply(data, function(df) mean(df$diffT, na.rm = TRUE)),
+    mean_meanT = sapply(data, function(df) mean(df$meanT, na.rm = TRUE)),
+
+    max_maxT = sapply(data, function(df) max(df$maxT, na.rm = TRUE)),
+    min_minT = sapply(data, function(df) min(df$minT, na.rm = TRUE)),
+
+    mean_TFC = sapply(data, function(df) mean(df$TFC, na.rm = TRUE)),
+    mean_snowcoverdays = sapply(data, function(df) mean(df$snowcoverdays, na.rm = TRUE)),
+    mean_icedays = sapply(data, function(df) mean(df$icedays, na.rm = TRUE)),
+    mean_summerdays = sapply(data, function(df) mean(df$summerdays, na.rm = TRUE))
+  )
+][, c("Bruecke", "data") := NULL][] -> climate_data_table_Y
+
+# Cast to data.frame
+datasetY_1 = data.frame(climate_data_table_Y) |> 
+  dplyr::mutate(across(where(is.numeric),~ replace(., !is.finite(.), NA)))
+
+# Hauptkomponentenanalyse
+
+clim_vars = c(
+  "mean_maxT","mean_minT","mean_diffT","mean_meanT", "max_maxT", "min_minT", 
+  "mean_TFC", "mean_snowcoverdays", "mean_icedays", "mean_summerdays"
+)
+
+pca_res = datasetY_1 |>
+  dplyr::select(all_of(clim_vars)) |>
+  dplyr::filter(if_all(everything(), ~ !is.na(.))) |>
+  stats::prcomp(scale. = TRUE)
+
+pcs = predict(pca_res, newdata = datasetY_1[, clim_vars])
+
+# Replace
+pc12 = as.data.frame(pcs[, 1:2])
+colnames(pc12) = c("clim_PC1", "clim_PC2")
+
+datasetY_1pc = datasetY_1 |>
+  dplyr::bind_cols(pc12)
+
+# Save
+
+save_dataset(datasetY_1pc, here::here("output/datasetY_1.db"))
+
+db = DBI::dbConnect(RSQLite::SQLite(), "output/pathdbs/MERGEDB.db")
+DBI::dbWriteTable(db, "datasetY_1", datasetY_1, overwrite = TRUE)
 ```
 
 ## Datensatz Z ('datasetZ')
