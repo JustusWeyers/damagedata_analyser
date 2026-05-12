@@ -223,8 +223,6 @@ rf5 = function(
     )
   )
 
-  tune_controll = tidyr::tibble(ranger_tune)
-
   ### -- Fitting --------------------
 
   print("Fitting")
@@ -236,8 +234,10 @@ rf5 = function(
   final_wf = tune::finalize_workflow(ranger_workflow, best_params)
 
   # Fit RF with best params
-  final_rf = final_wf |>
-    parsnip::fit(data = train_data) |>
+  final_wf_fitted = final_wf |>
+    parsnip::fit(data = train_data)
+
+  final_rf = final_wf_fitted |>
     workflows::extract_fit_parsnip()
 
   fit = final_rf$fit
@@ -304,17 +304,25 @@ rf5 = function(
     workflows::extract_fit_parsnip() |>
     vip::vi()
 
+  # Orbital prediction object
+  orbital_model = tryCatch(
+    orbital::orbital(final_wf_fitted),
+    error = \(e) {
+      print(e)
+      return(NULL)
+    }
+  )
+
   # Take time
   end = Sys.time()
 
   ### -- Instantiate model object ---
 
+  print("Instantiate model object")
+
   if (minimize_memory) {
     fit = NULL
-    tune_controll <- data.frame()
   }
-
-  print("Instantiate model object")
 
   m = methods::new(
 
@@ -355,7 +363,6 @@ rf5 = function(
     recipe          = as.character(rec$steps),            # Recipe (only steps)
 
     # Model tuning
-    tune_control    = tune_controll,                      # Tuning parameter
     tune_metrics    = tune::collect_metrics(ranger_tune), # Tuning metrics
 
     # Results
@@ -369,7 +376,7 @@ rf5 = function(
     gini_importance = gini_importance,                    # Vi Gini-importance Obj
 
     # Trained model
-    trained_model   = fit                                 # Ranger-obj final model
+    trained_model   = orbital_model                       # Orbital prediction object
   )
 
   ### -- Return model object --------

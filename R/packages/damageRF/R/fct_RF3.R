@@ -390,7 +390,6 @@ rf3 = function(bspid, prep, target, n = NA, trees = 1000, grid = 11, n_boots = 3
     recipe          = as.character(rec$steps), # Recipe (only steps)
 
     # Model tuning
-    tune_control    = tidyr::tibble(ranger_tune),         # Tuning parameter
     tune_metrics    = tune::collect_metrics(ranger_tune), # Tuning metrics
 
     # Results

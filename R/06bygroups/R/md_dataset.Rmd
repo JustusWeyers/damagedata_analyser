@@ -87,7 +87,7 @@ fulldata_clean = fulldata_clean |>
     
   )
 
-save_dataset(fulldata_clean, "output/fulldata_clean.db")
+# save_dataset(fulldata_clean, "output/fulldata_clean.db")
 ```
 
 #### Join BAST data (brueckenstatistik.csv)
@@ -124,9 +124,9 @@ fulldata_bast = dplyr::left_join(
   by = keys
 )
 
-skimr::skim(fulldata_bast)
+# skimr::skim(fulldata_bast)
 
-save_dataset(fulldata_bast, "output/fulldata_bast.db")
+# save_dataset(fulldata_bast, "output/fulldata_bast.db")
 ```
 
 
@@ -255,15 +255,23 @@ fulldata_bast_clim_final = fulldata_bast_clim |>
 save_dataset(fulldata_bast_clim_final, "output/fulldata_bast_clim.db")
 ```
 
+```{r}
+barplot(unique(fulldata_bast_clim$alter))
+```
 
 ```{r}
+# Read fulldata
+db = DBI::dbConnect(RSQLite::SQLite(), here::here("output/fulldata_bast_clim.db"))
+fulldata_bast_clim = DBI::dbReadTable(db, "fulldata_bast_clim")
+DBI::dbDisconnect(db)
+
 sf_df = fulldata_bast_clim |> 
   dplyr::slice_sample(n = 9999) |>
-  dplyr::filter(!is.na(X.Y.UTM.32N)) |> 
-  tidyr::separate(X.Y.UTM.32N, sep = "/", into = c("x", "y")) |> 
+  dplyr::filter(!is.na(x) & !is.na(y)) |> 
+  # tidyr::separate(X.Y.UTM.32N, sep = "/", into = c("x", "y")) |> 
   sf::st_as_sf(coords = c("x", "y"))
 
-ggplot2::ggplot(sf_df, ggplot2::aes(color = clim_pc1)) +
+ggplot2::ggplot(sf_df, ggplot2::aes(color = clim_pc2)) +
   ggplot2::geom_sf() +
   ggplot2::scale_color_gradient(high = "red", low = "blue") +
   ggplot2::theme_minimal()

@@ -1,91 +1,236 @@
 ---
-title: "implementation"
+title: "md_implementation"
 author: "JW"
 date: "`r Sys.Date()`"
-output: html_document
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
 ---
 
 ## Setup
 
-```{r Setup - Libraries}
-devtools::load_all("../packages/damageRF")
+```{r Setup - knitr, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(
+  cache = TRUE
+)
 ```
 
-```{r Setup - Functions}
-files = list.files(here::here("R/"), full.names = TRUE)
+```{r Setup - EnvVars}
+# Filepaths
+db_path = Sys.getenv("db_path", unset = here::here("output/fulldata_bast.db"))
+r_files = Sys.getenv("r_files", unset = here::here("R/"))
+
+# BSPID CODE FOR ANALYSIS
+bspid_code = Sys.getenv("bspid_code", unset = "B002")
+```
+
+```{r Setup - Libraries, message=FALSE}
+# Nur für lokale entwicklung
+devtools::load_all(
+  Sys.getenv("pkg_files", unset = here::here("../packages/damageRF"))
+)
+```
+
+```{r Setup - Helperfunctions, message=FALSE}
+files = list.files(r_files, full.names = TRUE)
 sapply(files[startsWith(basename(files), "hlp_")], source)
 ```
 
-## Read Data
+## Datawrangling
 
-```{r ReadData}
-db = DBI::dbConnect(RSQLite::SQLite(), here::here("output/fulldata_bast_clim.db"))
-workingdata = DBI::dbReadTable(db, "fulldata_bast_clim") |> 
-  dplyr::as_tibble()
+```{r Datawrangling - Reading, eval=TRUE}
+db = DBI::dbConnect(RSQLite::SQLite(), db_path)
+workingdata_db = DBI::dbReadTable(db, "fulldata_bast") |> 
+  dplyr::as_tibble() |> 
+  dplyr::rename(any_of(setNames(names(col_translations), col_translations)))
+
 DBI::dbDisconnect(db)
+```
+
+```{r Datawrangling - Mutation, eval=TRUE}
+# Split nach Verbesserungen
+workingdata = workingdata_db |>
+  dplyr::group_by(id) |>
+  dplyr::arrange(age, .by_group = TRUE) |>
+  dplyr::mutate(
+    subgroup = cumsum(c(0, diff(rtg_d) < 0)),
+    id   = paste(id, letters[subgroup + 1], sep = "_")
+  ) |>
+  dplyr::select(-subgroup) |> 
+  dplyr::ungroup()
+
+# Nur Konstanz oder Verschlechterungen
+workingdata = workingdata |>
+  dplyr::group_by(id) |>
+  dplyr::filter(any(diff(rtg_d) >= 0)) |>
+  dplyr::ungroup()
+
+# Initiale bspid
+workingdata = workingdata |>
+  dplyr::group_by(id) |>
+  dplyr::arrange(age, .by_group = TRUE) |>
+  dplyr::mutate(
+    init_bsp_id = dplyr::first(bsp_id)
+  ) |>
+  dplyr::ungroup()
+```
+
+## Instanziate BSP-ID Objects
+
+```{r, eval=TRUE}
+# Instanziation
+bspids = bspid_instantiation()
+```
+
+## Vizualisation
+
+Darstellung einiger hundert Schadensverläufe: 
+
+```{r, eval=FALSE}
+# Some visualization
+plot_rtg_d_over_age(workingdata, n = 300)
+```
+
+Klassen- und Bewertungsdaten in Gruppen:
+
+```{r, eval=FALSE}
+# Some visualization
+plot_target_age(set_data(bspids[[bspid_code]], workingdata), bygroup = TRUE)
 ```
 
 ## Training
 
-```{r Training - Instanziation}
-bspids = bspid_instantiation()
+#### 1. Binary classification
+
+```{r 1. Binary classification - Preparation, eval=TRUE}
+workingdata_binclass = workingdata |> 
+  dplyr::group_by(id) |> 
+  dplyr::arrange(age, .by_group = TRUE) |> 
+  dplyr::mutate(change = any(diff(rtg_d) > 0) | any(dplyr::lag(bsp_id) != bsp_id, na.rm = TRUE)) |> 
+  dplyr::mutate(change = as.numeric(change)) |> 
+  dplyr::ungroup()
 ```
 
-```{r Training - Parallelize}
-# library(future)
-# library(future.apply)
-# 
-# plan(multisession, workers = max(1, floor(parallel::detectCores()/2)) - 1)
-# 
-# devtools::load_all("../packages/damageRF")
-# 
-# results <- future.apply::future_lapply(
-#   X = bspids[1:3],
-#   FUN = function(bspid) {
-#     
-#     bspid = set_data(bspid, workingdata)
-#     
-#     bspid = train_model(bspid, model = damageRF::rf5, testrun = TRUE)
-#     
-#     bspid = delete_data(bspid)
-#     
-#     return(bspid)
-#     
-#   },
-#   future.seed = TRUE
-# )
-# 
-# res1 = results[[1]]
-# res1@models[[3]]
-# 
-# save_results(results)
-```
+```{r 1. Binary classification - Training, eval=FALSE}
+bspid_binclass = set_data(bspids[[bspid_code]], workingdata_binclass)
 
-## Playground
-
-```{r Playground}
-devtools::load_all("../packages/damageRF")
-
-names(bspids)
-
-# Run
-bspid = bspids[[3]]
-bspid = set_data(bspid, workingdata)
-
-bspid = train_model(
-  self = bspid, 
-  model = damageRF::rf5, 
-  row_limit = 100000, 
+bspid_binclass = binary_classification(
+  self = bspid_binclass, 
+  model = damageRF::rf6_binary,
+  target = "change",
+  row_limit = 1000, 
   trees = 1000, 
+  grid = 10,
+  n_boots = 10
+)
+```
+
+```{r 1. Binary classification - Metrics, eval=FALSE}
+# m = bspid_binclass@models[["binary_classification"]]
+# 
+# m@prediction$threshold_perf |>
+#   ggplot2::ggplot(aes(x = .threshold, y = .estimate, color = .metric)) +
+#   ggplot2::geom_line(lwd = 1.2) +
+#   ggplot2::theme_minimal()
+# 
+# oofb = m@prediction$OOFB
+# preds = 
+# 
+# yardstick::conf_mat(oofb, truth = target, estimate = .pred_class)$table
+# 
+# cm = oofb |>
+#   dplyr::mutate(
+#     .pred_class_adj = factor(
+#       ifelse(.pred_1 >= m@prediction$best_threshold, "1", "0"),
+#       levels = c("0", "1")
+#     )
+#   ) |>
+#   yardstick::conf_mat(truth = target, estimate = .pred_class_adj)
+# 
+# cm$table
+# 
+# m@prediction$best_threshold
+# 
+# ggplot2::ggplot(oofb, ggplot2::aes(x = .pred_1, fill = target)) +
+#   ggplot2::geom_density(alpha = 0.5)
+# 
+# ggplot2::ggplot(m@prediction$prob, ggplot2::aes(x = .pred_1, fill = truth)) +
+#   ggplot2::geom_density(alpha = 0.5) +
+#   ggplot2::theme_minimal()
+```
+
+#### 2. Multiclass classification of next damage
+
+```{r 2. Multi-Classification bsp_id, eval=FALSE}
+# # Package
+# devtools::load_all(here::here("../packages/damageRF"))
+# 
+# # Classification
+# bspid = train_groups(
+#   self = bspid, 
+#   model = damageRF::rf6_,
+#   target = "bsp_id",
+#   row_limit = 5000, 
+#   trees = 1000, 
+#   grid = 3,
+#   n_boots = 1
+# )
+```
+
+#### 3. Regression of rtg_d
+
+```{r 3. Regression of rtg_d, eval=TRUE}
+workingdata_regression = workingdata_binclass |> 
+  dplyr::filter(change == 1) |> 
+  dplyr::select(-change)
+
+skimr::skim(workingdata_regression)
+
+```
+
+```{r 3. Regression of rtg_d, eval=TRUE}
+devtools::load_all(here::here("../packages/damageRF"))
+
+# Fetch bspid if interest
+bspid_regression = bspids[[bspid_code]]
+
+# Set data
+bspid_regression = set_data(bspid_regression, workingdata_regression)
+
+# Regression
+bspid_regression = train_groups(
+  self = bspid_regression, 
+  model = damageRF::rf7, 
+  target = bspid_regression@target_col,
+  row_limit = 1000,
+  trees = 500, 
   grid = 3,
   n_boots = 3
 )
 
-bspid = delete_data(bspid)
-
-# Show results
-plot_target_age(bspid, bygroup = TRUE)
-plotter(bspid)
-
-
+plotter(bspid_regression)
 ```
+
+**To Do:**
+
+AUC / ROC-Kurven fehlen – bei Multiclass-Klassifikation wichtig (one-vs-rest)
+
+Kappa-Koeffizient fehlt – robuster als Accuracy bei unbalancierten Klassen
+
+**Sinnvoll:**
+
+Balanced Accuracy (Klasse 3 hat nur 21 Trainingsbeobachtungen – starke Imbalance)
+
+Macro-F1 / Weighted-F1 als aggregierter Gesamtscore
+
+Konfidenzintervalle der Metriken aus dem Resampling
+
+OOB-Error (Out-of-Bag), der bei RF kostenlos anfällt
+
+**Optional:**
+
+Lernkurve (Performance vs. Trainingsgröße)
+Partial Dependence Plots für die wichtigsten Features

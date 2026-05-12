@@ -62,42 +62,22 @@ metrics_df = function(class, pred) {
   return(df)
 }
 
+kappa_linear_weighted = function(truth_num, pred_num) {
+  lvls = sort(unique(c(truth_num, pred_num)))
+  if (length(lvls) < 2) return(NA_real_)
+  n   = length(truth_num)
+  obs = table(factor(truth_num, lvls), factor(pred_num, lvls))
+  w   = outer(lvls, lvls, function(i, j) 1 - abs(i - j) / (max(lvls) - min(lvls)))
+  exp = outer(rowSums(obs) / n, colSums(obs) / n) * n
+  po  = sum(w * obs) / n
+  pe  = sum(w * exp) / n
+  round((po - pe) / (1 - pe), 3)
+}
+
 txt_spacer = function(attr, val, len = 23) {
   paste0(
     attr,
     strrep(" ", len - nchar(as.character(attr)) - nchar(as.character(val))),
     val
   )
-}
-
-textplotter = function(txt){
-  ggplot2::ggplot() +
-    ggplot2::annotate(
-      "text",
-      x = 0.05, y = 0.95,
-      label = paste(txt, collapse = "\n"),
-      hjust = 0, vjust = 1,
-      family = "mono",
-      size = 4
-    ) +
-    ggplot2::xlim(0, 1) +
-    ggplot2::ylim(0, 1) +
-    ggplot2::theme_void() +
-    ggplot2::coord_cartesian(expand = FALSE)
-}
-
-tableplotter = function(df) {
-  ggplot2::ggplot() +
-    ggplot2::geom_blank() +
-    ggplot2::annotate(
-      "label",
-      x = 0.0, y = 0.0,
-      label = paste(catch_console(df), collapse = "\n"),
-      family = "mono",
-      size = 4,
-      hjust = 0.5, vjust = 0.5,
-      fill = "#f0f0f0",
-      label.r = grid::unit(0.1, "lines")
-    ) +
-    ggplot2::theme_void()
 }

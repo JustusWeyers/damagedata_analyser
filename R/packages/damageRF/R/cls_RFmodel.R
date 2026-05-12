@@ -35,6 +35,7 @@ methods::setClass(
     param_txt       = "character",
 
     # Data
+    roles           = "list",
     target_var      = "character",
     train_data      = "data.frame",
     test_data       = "data.frame",
@@ -52,7 +53,8 @@ methods::setClass(
     best_params     = "data.frame",
     final_rf        = "ANY",
     prediction      = "list",
-    metrics         = "data.frame",
+    metrics          = "data.frame",
+    baseline_metrics = "data.frame",
 
     perm_importance = "ANY",
     gini_importance = "ANY",
@@ -61,7 +63,7 @@ methods::setClass(
     pr_df           = "data.frame",
 
     # Trained model
-    trained_model   = "ANY",
+    trained_model   = "list",
 
     # Specifica
     size            = "numeric"
@@ -85,6 +87,7 @@ methods::setClass(
     param_txt   = NA_character_,
 
     # Data
+    roles       = list(),
     target_var  = NA_character_,
     train_data  = data.frame(),
     test_data   = data.frame(),
@@ -102,7 +105,8 @@ methods::setClass(
     best_params     = data.frame(),
     final_rf        = NULL,
     prediction      = list(),
-    metrics         = data.frame(),
+    metrics          = data.frame(),
+    baseline_metrics = data.frame(),
 
     perm_importance = NULL,
     gini_importance = NULL,
@@ -133,6 +137,7 @@ setMethod(
            grid            = NA_real_,
            tune_metric     = NA_character_,
            param_txt       = NA_character_,
+           roles           = list(),
            target_var      = NA_character_,
            train_data      = data.frame(),
            test_data       = data.frame(),
@@ -144,8 +149,9 @@ setMethod(
            final_rf        = NULL,
            gini            = NA_real_,
            prediction      = list(),
-           metrics         = data.frame(),
-           perm_importance = NULL,
+           metrics          = data.frame(),
+           baseline_metrics = data.frame(),
+           perm_importance  = NULL,
            gini_importance = NULL,
            roc_df          = data.frame(),
            pr_df           = data.frame(),
@@ -163,6 +169,7 @@ setMethod(
     .Object@grid            <- grid
     .Object@tune_metric     <- tune_metric
     .Object@param_txt       <- param_txt
+    .Object@roles           <- roles
     .Object@target_var      <- target_var
     .Object@train_data      <- train_data
     .Object@test_data       <- test_data
@@ -174,8 +181,9 @@ setMethod(
     .Object@final_rf        <- final_rf
     .Object@gini            <- gini
     .Object@prediction      <- prediction
-    .Object@metrics         <- metrics
-    .Object@perm_importance <- perm_importance
+    .Object@metrics          <- metrics
+    .Object@baseline_metrics <- baseline_metrics
+    .Object@perm_importance  <- perm_importance
     .Object@gini_importance <- gini_importance
     .Object@roc_df          <- roc_df
     .Object@pr_df           <- pr_df

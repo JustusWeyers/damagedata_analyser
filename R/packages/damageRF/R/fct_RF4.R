@@ -332,7 +332,6 @@ rf4 = function(
     recipe          = as.character(rec$steps),            # Recipe (only steps)
 
     # Model tuning
-    tune_control    = tidyr::tibble(ranger_tune),         # Tuning parameter
     tune_metrics    = tune::collect_metrics(ranger_tune), # Tuning metrics
 
     # Results

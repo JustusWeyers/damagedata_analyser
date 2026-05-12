@@ -14,7 +14,6 @@ setClass(
     age_name = "character",
     models = "list",
     bspid_codes = "data.frame",
-    bspid_codes_en = "data.frame",
     id_vars = "character",
     target_vars = "character"
   ),
@@ -24,21 +23,21 @@ setClass(
     subs = NA_character_,
     groups = list(),
     desc = NA_character_,
-    target_col = "bewert_d",
-    age_col = "alter",
+    target_col = "rtg_d",
+    age_col = "age",
     id_col = "id",
     bspid_col = "bsp_id",
     target_name = "Value D [-]",
     age_name = "Age [a]",
     models = list(),
     bspid_codes = data.frame(),
-    bspid_codes_en = data.frame(),
     id_vars = c(
-      "id", "ort", "tbwnr", "schad_id", "bauwerksname"
+      "id", "location", "sub_struct_no", "damage_id", "structure_name",
+      "damage", "X.Y.UTM.32N"
     ),
     target_vars = c(
-      "zustandsnote", "zustandsnotenklasse", "substanzkennzahl", "bewert_s",
-      "bewert_v", "bewert_d", "max_s", "max_v", "max_d", "bsp_id"
+      "condition_score", "condition_class", "substance_idx", "rtg_s",
+      "rtg_v", "rtg_d", "max_s", "max_v", "max_d", "bsp_id"
     )
   )
 )
@@ -51,9 +50,7 @@ setMethod("initialize", "BSPID", function(
 
   if (is.null(.Object@bspid_codes) || nrow(.Object@bspid_codes) == 0) {
     data("bspid_codes", package = "damageRF", envir = environment())
-    data("bspid_codes_en", package = "damageRF", envir = environment())
     .Object@bspid_codes <- bspid_codes
-    .Object@bspid_codes_en <- bspid_codes_en
   }
 
   .Object@bspid <- bspid
@@ -111,10 +108,6 @@ setMethod("initialize", "BSPID", function(
     .Object@bspid_codes$class1 == as.numeric(sep[1]),
   ]
 
-  .Object@bspid_codes_en <- .Object@bspid_codes_en[
-    .Object@bspid_codes_en$class1 == as.numeric(sep[1]),
-  ]
-
   return(.Object)
 })
 
@@ -125,11 +118,7 @@ setGeneric("get_desc", function(self, de = FALSE, limit_lengthout = TRUE) {
 setMethod("get_desc", "BSPID", function(self, de = FALSE, limit_lengthout = TRUE) {
   sep <- as.numeric(strsplit(self@bspid, "-", fixed = TRUE)[[1]])
 
-  if (de) {
-    cds = self@bspid_codes
-  } else {
-    cds = self@bspid_codes_en
-  }
+  cds = self@bspid_codes
 
   if (length(sep) == 1) {
     desc <- cds$tl_desc[cds$class1 == sep[1]][1]
@@ -196,12 +185,6 @@ setMethod("get_pairings", "BSPID", function(self) {
 
   return(Filter(function(x) length(x) > 1, pairings))
 })
-
-B002 = new("BSPID", bspid = "002")
-B002@subs
-get_pairings(B002)
-B006 = new("BSPID", bspid = "006-01")
-B006@subs
 
 setGeneric("trend_over_combi", function(self, v) {
   standardGeneric("trend_over_combi")
@@ -289,10 +272,10 @@ setMethod("plot_target_age", "BSPID", function(self, bygroup = FALSE, interactiv
   desc = get_desc(self)
 
   if (length(desc) == 1) {
-    title = paste(self@bspid, "-" , desc)
+    title = paste(self@bspid, "|" , desc)
     subtitle = NULL
   } else if (length(desc) > 1) {
-    title = paste(self@bspid, "-" , desc[1])
+    title = paste(self@bspid, "|" , desc[1])
     subtitle = desc[2:length(desc)]
   }
 
@@ -314,8 +297,7 @@ setMethod("plot_target_age", "BSPID", function(self, bygroup = FALSE, interactiv
     )
 
     df_counts <- df_long |>
-      dplyr::count(group, .data[[self@target_col]]) |>
-      dplyr::rename(bewert_d = .data[[self@target_col]])
+      dplyr::count(group, .data[[self@target_col]])
 
 
     p = ggplot2::ggplot(
@@ -399,13 +381,41 @@ setMethod("plot_target_age", "BSPID", function(self, bygroup = FALSE, interactiv
   return(p)
 })
 
-setGeneric("train_model", function(self, model, testrun = FALSE, minimize_memory = FALSE, ...) {
-  standardGeneric("train_model")
+setGeneric("binary_classification", function(self, model, target = NA, testrun = FALSE, ...) {
+  standardGeneric("binary_classification")
 })
 
-setMethod("train_model", "BSPID", function(self, model, testrun = FALSE, minimize_memory = FALSE, ...) {
+setMethod("binary_classification", "BSPID", function(self, model, target = NA, testrun = FALSE, ...) {
 
-  self@models = lapply(seq_along(self@groups), function(i) {
+  if (is.na(target)) {
+    target = self@target_col
+  }
+
+  self@models[["binary_classification"]] = model(
+    data = self@data,
+    id = self@id_col,
+    id_vars = self@id_vars,
+    target_vars = self@target_vars,
+    target = target,
+    testrun = testrun,
+    time_ax = self@age_col,
+    ...
+  )
+
+  return(self)
+})
+
+setGeneric("train_groups", function(self, model, target = NA, testrun = FALSE, ...) {
+  standardGeneric("train_groups")
+})
+
+setMethod("train_groups", "BSPID", function(self, model, target = NA, testrun = FALSE, ...) {
+
+  if (is.na(target)) {
+    target = self@target_col
+  }
+
+  self@models[names(self@groups)] = lapply(seq_along(self@groups), function(i) {
 
     model(
       identity = setNames(self@groups[i], names(self@groups)[i]),
@@ -413,9 +423,9 @@ setMethod("train_model", "BSPID", function(self, model, testrun = FALSE, minimiz
       id = self@id_col,
       id_vars = self@id_vars,
       target_vars = self@target_vars,
-      target = self@target_col,
+      target = target,
       testrun = testrun,
-      minimize_memory = minimize_memory,
+      time_ax = self@age_col,
       ...
     )
 

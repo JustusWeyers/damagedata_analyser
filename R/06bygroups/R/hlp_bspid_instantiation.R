@@ -6,11 +6,14 @@ bspid_instantiation = function() {
       Class = "BSPID", 
       bspid = "002", 
       groups = list(
-        holes = c(
+        spalling = c(
           "002-01", "002-02", "002-03", "002-04", "002-05", "002-06", "002-07", 
           "002-08"
         ),
-        wet = c(
+        spalling_spec = c(
+          "002-02", "002-03", "002-04"
+        ),
+        moisture = c(
           "002-09", "002-10"
         )
       )
@@ -21,7 +24,7 @@ bspid_instantiation = function() {
       Class = "BSPID", 
       bspid = "006", 
       groups = list(
-        all = c(
+        damaged = c(
           "006-01", "006-01-01", "006-01-02", "006-01-03", "006-01-04", 
           "006-01-05", "006-01-06", "006-02", "006-02-01", "006-02-02", 
           "006-02-03", "006-02-04", "006-02-05", "006-02-06", "006-02-07", 
@@ -36,14 +39,14 @@ bspid_instantiation = function() {
       Class = "BSPID", 
       bspid = "006-01", 
       groups = list(
-        close_surface = c(
+        near_surface = c(
           "006-01-01", "006-01-02", "006-01-03", "006-01-04", "006-01-05", 
           "006-01-06" 
         ),
-        close_surface_nospray = c(
+        near_surface_nospray = c(
           "006-01-01", "006-01-03", "006-01-05"
         ),
-        close_surface_spray = c(
+        near_surface_spray = c(
           "006-01-02", "006-01-04", "006-01-06"
         )
       )
@@ -90,10 +93,10 @@ bspid_instantiation = function() {
       Class = "BSPID", 
       bspid = "021", 
       groups = list(
-        holes = c(
+        spalling = c(
           "021-07", "021-08", "021-09", "021-10", "021-11", "021-12"
         ),
-        wet = c(
+        moisture = c(
           "021-05", "021-06"
         )
       )
@@ -143,7 +146,7 @@ bspid_instantiation = function() {
       Class = "BSPID", 
       bspid = "233", 
       groups = list(
-        loose_curb = c(
+        loose_kerb = c(
           "233-03", "233-04", "233-05", "233-06", "233-07", "233-08", "233-09"
         )
       )
@@ -177,11 +180,11 @@ bspid_instantiation = function() {
       Class = "BSPID", 
       bspid = "027", 
       groups = list(
-        hole = c(
+        spalling = c(
           "027-01", "027-02", "027-03", "027-04", "027-06", "027-09", "027-10", 
           "027-11", "027-12", "027-13"
         ),
-        wet = c(
+        moisture = c(
           "027-07", "027-08"
         )
       )
@@ -254,11 +257,11 @@ bspid_instantiation = function() {
       Class = "BSPID", 
       bspid = "009", 
       groups = list(
-        hole = c(
+        spalling = c(
           "009-01", "009-02", "009-03", "009-05", "009-07", "009-08", "009-11", 
           "009-12", "009-14", "009-15", "009-16", "009-17"
         ),
-        wet = c(
+        moisture = c(
           "009-09", "009-10"
         )
       )
@@ -272,7 +275,7 @@ bspid_instantiation = function() {
         crack = c(
           "237-02", "237-03"
         ),
-        hole = c(
+        spalling = c(
           "237-06", "237-07", "237-08", "237-09", "237-10", "237-11", "237-13"
         )
 
@@ -349,11 +352,11 @@ bspid_instantiation = function() {
       Class = "BSPID", 
       bspid = "244", 
       groups = list(
-        all = c(
+        damaged = c(
           "244-01", "244-02", "244-04", "244-05", "244-06", "244-07", "244-08", 
           "244-09", "244-10"
         ),
-        hole = c(
+        spalling = c(
           "244-06", "244-07", "244-08"
         ),
         crack = c(
