@@ -29,6 +29,7 @@ Imports:
     plotly,
     probably,
     purrr,
+    ranger,
     recipes,
     rlang,
     rsample,
