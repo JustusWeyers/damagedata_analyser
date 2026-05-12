@@ -3,6 +3,7 @@
 #'
 #' @param self self
 
+#' @export
 setGeneric("hist_target_plotter", function(self, target_name) standardGeneric("hist_target_plotter"))
 
 setMethod("hist_target_plotter", "RF", function(self, target_name) {

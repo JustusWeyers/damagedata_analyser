@@ -6,6 +6,8 @@ figs/
 literarur/
 
 **/data/
+!R/packages/damageRF/data/
+!R/packages/damageRF/data/**
 
 **.html
 

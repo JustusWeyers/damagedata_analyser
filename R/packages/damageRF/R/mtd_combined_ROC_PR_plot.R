@@ -2,6 +2,7 @@
 #'
 #' @param self self
 
+#' @export
 setGeneric("combined_ROC_PR_plot", function(self) standardGeneric("combined_ROC_PR_plot"))
 
 setMethod("combined_ROC_PR_plot", "RF", function(self) {

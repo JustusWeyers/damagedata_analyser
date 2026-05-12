@@ -111,6 +111,7 @@ setMethod("initialize", "BSPID", function(
   return(.Object)
 })
 
+#' @export
 setGeneric("get_desc", function(self, de = FALSE, limit_lengthout = TRUE) {
   standardGeneric("get_desc")
 })
@@ -168,6 +169,7 @@ setMethod("get_desc", "BSPID", function(self, de = FALSE, limit_lengthout = TRUE
 #   return(appended)
 # })
 
+#' @export
 setGeneric("get_pairings", function(self) {
   standardGeneric("get_pairings")
 })
@@ -186,6 +188,7 @@ setMethod("get_pairings", "BSPID", function(self) {
   return(Filter(function(x) length(x) > 1, pairings))
 })
 
+#' @export
 setGeneric("trend_over_combi", function(self, v) {
   standardGeneric("trend_over_combi")
 })
@@ -234,6 +237,7 @@ setMethod("trend_over_combi", "BSPID", function(self, v = FALSE) {
 
 })
 
+#' @export
 setGeneric("set_data", function(self, data) {
   standardGeneric("set_data")
 })
@@ -243,6 +247,7 @@ setMethod("set_data", "BSPID", function(self, data) {
   return(self)
 })
 
+#' @export
 setGeneric("delete_data", function(self) {
   standardGeneric("delete_data")
 })
@@ -252,6 +257,7 @@ setMethod("delete_data", "BSPID", function(self) {
   return(self)
 })
 
+#' @export
 setGeneric("get_data", function(self) {
   standardGeneric("get_data")
 })
@@ -260,6 +266,7 @@ setMethod("get_data", "BSPID", function(self = FALSE) {
   self@data
 })
 
+#' @export
 setGeneric("plot_target_age", function(self, bygroup = FALSE, interactive = FALSE) {
   standardGeneric("plot_target_age")
 })
@@ -381,6 +388,7 @@ setMethod("plot_target_age", "BSPID", function(self, bygroup = FALSE, interactiv
   return(p)
 })
 
+#' @export
 setGeneric("binary_classification", function(self, model, target = NA, testrun = FALSE, ...) {
   standardGeneric("binary_classification")
 })
@@ -405,6 +413,7 @@ setMethod("binary_classification", "BSPID", function(self, model, target = NA, t
   return(self)
 })
 
+#' @export
 setGeneric("train_groups", function(self, model, target = NA, testrun = FALSE, ...) {
   standardGeneric("train_groups")
 })
