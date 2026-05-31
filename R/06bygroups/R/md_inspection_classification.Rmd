@@ -1,0 +1,200 @@
+---
+title: "Model Inspection"
+author: "JW"
+date: "`r Sys.Date()`"
+output: html_document
+runtime: shiny
+---
+
+```{css, echo=FALSE}
+.main-container {
+  max-width: 100% !important;
+  margin-left:  0 !important;
+  margin-right: 0 !important;
+  padding-left:  15px;
+  padding-right: 15px;
+}
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+output_dir <- here::here("output")
+devtools::load_all(here::here("../packages/damageRF"))
+```
+
+## Modell - Auswahl
+
+```{r selectors}
+run_dirs <- list.dirs(output_dir, full.names = FALSE, recursive = FALSE) |>
+  (\(x) x[startsWith(x, "run")])()
+
+select_run = shiny::selectInput("run", "Run", choices = run_dirs)
+
+select_bspid = shiny::renderUI({
+  shiny::req(input$run)
+  model_dirs <- list.dirs(
+    file.path(output_dir, input$run),
+    full.names = FALSE,
+    recursive = FALSE
+  )
+  shiny::selectInput("model", "Modell", choices = model_dirs)
+})
+
+select_rds = shiny::renderUI({
+  shiny::req(input$run, input$model)
+  rds_files <- list.files(
+    file.path(output_dir, input$run, input$model),
+    pattern = "\\.rds$", ignore.case = TRUE
+  )
+  shiny::selectInput("rds_file", "RDS-Datei", choices = rds_files)
+})
+
+button_read = shiny::actionButton("load", "Einlesen", icon = shiny::icon("folder-open"))
+
+shiny::fluidRow(
+  shiny::column(3, select_run),
+  shiny::column(3, select_bspid),
+  shiny::column(3, select_rds),
+  shiny::column(3, shiny::div(style = "margin-top: 25px;", button_read))
+)
+```
+
+## Ergebnisse
+
+```{r load_rds}
+rds_data <- shiny::eventReactive(input$load, {
+  shiny::req(input$run, input$model, input$rds_file)
+  readRDS(file.path(output_dir, input$run, input$model, input$rds_file))
+})
+```
+
+```{r dynamic_ui}
+shiny::renderUI({
+  shiny::req(rds_data())
+  shiny::tagList(
+    shiny::hr(),
+    shiny::h4("Modellmetriken"),
+    shiny::plotOutput("plot_plotter", height = "800px"),
+    shiny::h4("Threshold Performance"),
+    shiny::plotOutput("plot_thresh"),
+    shiny::h4("Konfusionsmatrix OOFB (Threshold 0.5)"),
+    shiny::verbatimTextOutput("cm_oofb_default"),
+    shiny::h4(shiny::textOutput("best_thresh_label")),
+    shiny::h4("Konfusionsmatrix OOFB (adjustiert)"),
+    shiny::verbatimTextOutput("cm_oofb_adj"),
+    shiny::h4("Konfusionsmatrix Holdout (Threshold 0.5)"),
+    shiny::verbatimTextOutput("cm_holdout_default"),
+    shiny::h4("Konfusionsmatrix Holdout (adjustiert)"),
+    shiny::verbatimTextOutput("cm_holdout_adj"),
+    shiny::h4("OOFB Predicted Probability Density"),
+    shiny::plotOutput("plot_oofb"),
+    shiny::h4("Holdout Predicted Probability Density"),
+    shiny::plotOutput("plot_prob")
+  )
+})
+```
+
+```{r dynamic_renderers}
+shiny::observe({
+  data <- rds_data()
+  shiny::req(data)
+  m <- data@models[["binary_classification"]]
+
+  shiny::withProgress(message = "Erstelle Plots", value = 0, {
+    output[["plot_plotter"]] <- shiny::renderPlot({
+      damageRF::plotter(data)
+    })
+    shiny::incProgress(amount = 1/4, detail = "Metriken")
+
+    output[["plot_thresh"]] <- shiny::renderPlot({
+      m@prediction$threshold_perf |>
+        ggplot2::ggplot(ggplot2::aes(x = .threshold, y = .estimate, color = .metric)) +
+        ggplot2::geom_line(lwd = 1.2) +
+        ggplot2::theme_minimal()
+    })
+    shiny::incProgress(amount = 1/4, detail = "Threshold")
+
+    output[["cm_oofb_default"]] <- shiny::renderPrint({
+      yardstick::conf_mat(
+        m@prediction$OOFB,
+        truth    = target,
+        estimate = .pred_class
+      )$table |> t()
+    })
+
+    output[["best_thresh_label"]] <- shiny::renderText({
+      paste("Best Threshold:", round(m@prediction$best_threshold, 4))
+    })
+
+    output[["cm_oofb_adj"]] <- shiny::renderPrint({
+      truth_counts <- table(m@prediction$OOFB$target)
+      minority_cls <- names(which.min(truth_counts))
+      majority_cls <- names(which.max(truth_counts))
+      pred_col     <- paste0(".pred_", minority_cls)
+      lvls         <- names(sort(truth_counts))
+      m@prediction$OOFB |>
+        dplyr::mutate(
+          .pred_class_adj = factor(
+            ifelse(.data[[pred_col]] >= m@prediction$best_threshold, minority_cls, majority_cls),
+            levels = lvls
+          ),
+          target = factor(target, levels = lvls)
+        ) |>
+        yardstick::conf_mat(truth = target, estimate = .pred_class_adj) |>
+        (\(x) t(x$table))()
+    })
+
+    output[["cm_holdout_default"]] <- shiny::renderPrint({
+      truth_counts <- table(m@prediction$prob$truth)
+      minority_cls <- names(which.min(truth_counts))
+      majority_cls <- names(which.max(truth_counts))
+      pred_col     <- paste0(".pred_", minority_cls)
+      lvls         <- names(sort(truth_counts))
+      m@prediction$prob |>
+        dplyr::mutate(
+          .pred_class_def = factor(
+            ifelse(.data[[pred_col]] >= 0.5, minority_cls, majority_cls),
+            levels = lvls
+          ),
+          truth = factor(truth, levels = lvls)
+        ) |>
+        yardstick::conf_mat(truth = truth, estimate = .pred_class_def) |>
+        (\(x) t(x$table))()
+    })
+
+    output[["cm_holdout_adj"]] <- shiny::renderPrint({
+      yardstick::conf_mat(
+        m@prediction$pred,
+        truth    = truth,
+        estimate = .pred_class
+      )$table |> t()
+    })
+
+    output[["plot_oofb"]] <- shiny::renderPlot({
+      minority_cls <- names(which.min(table(m@prediction$OOFB$target)))
+      pred_col     <- paste0(".pred_", minority_cls)
+      ggplot2::ggplot(
+        m@prediction$OOFB,
+        ggplot2::aes(x = .data[[pred_col]], fill = target)
+      ) +
+        ggplot2::geom_density(alpha = 0.5) +
+        ggplot2::xlab(pred_col) +
+        ggplot2::theme_minimal()
+    })
+    shiny::incProgress(amount = 1/4, detail = "OOFB")
+
+    output[["plot_prob"]] <- shiny::renderPlot({
+      minority_cls <- names(which.min(table(m@prediction$prob$truth)))
+      pred_col     <- paste0(".pred_", minority_cls)
+      ggplot2::ggplot(
+        m@prediction$prob,
+        ggplot2::aes(x = .data[[pred_col]], fill = truth)
+      ) +
+        ggplot2::geom_density(alpha = 0.5) +
+        ggplot2::xlab(pred_col) +
+        ggplot2::theme_minimal()
+    })
+    shiny::incProgress(amount = 1/4, detail = "Prob")
+  })
+})
+```

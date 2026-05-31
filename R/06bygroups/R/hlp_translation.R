@@ -1,4 +1,4 @@
-col_translations <- c(
+translations <- c(
   "id"                        = "id",
   "ort"                       = "location",
   "baujahr"                   = "construction_yr",

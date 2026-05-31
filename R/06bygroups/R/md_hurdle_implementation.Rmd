@@ -1,0 +1,258 @@
+---
+title: "md_hurdle_implementation"
+author: "JW"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+---
+
+# Setup
+
+```{r Setup - knitr, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(
+  cache = FALSE,
+  eval  = TRUE
+)
+```
+
+<h4> Environment </h4>
+
+```{r Setup - EnvVars}
+r_files    = Sys.getenv(x = "r_files", unset = here::here("R/"))
+
+db_path = here::here("output/fulldata_bast_clim_red.db")
+db_path = Sys.getenv(x = "db_path", unset = db_path)
+
+bspid_code = Sys.getenv(x = "bspid_code", unset = "B006_03")
+test_run = Sys.getenv(x = "test_run", unset = TRUE)
+```
+
+<h4> Pakete </h4>
+
+```{r Setup - Libraries, message=FALSE}
+devtools::load_all(
+  Sys.getenv("pkg_files", unset = here::here("../packages/damageRF"))
+)
+```
+
+<h4> Helper Functions </h4>
+
+```{r Setup - Helperfunctions, message=FALSE}
+files = list.files(r_files, full.names = TRUE)
+sapply(files[startsWith(basename(files), "hlp_")], source)
+```
+
+<h4> Modell Parameter </h4>
+
+```{r Setup - Model Parameter}
+test_run = TRUE # Remove
+shared_seed = 4242
+shared_prop = 0.80
+```
+
+## Datawrangling
+
+<h4> Database connection </h4>
+
+```{r Datawrangling - Database}
+db = DBI::dbConnect(RSQLite::SQLite(), db_path)
+
+workingdata_db = DBI::dbReadTable(db, "fulldata_bast_clim_red") |>
+  dplyr::as_tibble() |>
+  dplyr::rename(dplyr::any_of(setNames(names(translations), translations))) |>
+  dplyr::mutate(bsp_id = sub("-+$", "", bsp_id))
+
+DBI::dbDisconnect(db)
+```
+
+
+## BSP-ID Object Instantiation
+
+```{r BSP-ID Instantiation}
+# Create BSPID-Object list
+bspids = bspid_instantiation()
+# Select one
+bspid  = bspids[[bspid_code]]
+# Set data
+bspid = set_data(bspid, workingdata_db)
+```
+
+<h4> Mutation </h4>
+
+```{r Datawrangling - Mutation}
+# Split if rtg_d improves
+data = bspid@data |>
+  dplyr::group_by(id) |>
+  dplyr::arrange(age, .by_group = TRUE) |>
+  dplyr::mutate(
+    subgroup = cumsum(c(0, diff(rtg_d) < 0)),
+    id       = paste(id, letters[subgroup + 1], sep = "_")
+  ) |>
+  dplyr::select(-subgroup) |>
+  dplyr::ungroup()
+
+# Filter improvements out
+data = data |>
+  dplyr::group_by(id) |>
+  dplyr::filter(any(diff(rtg_d) >= 0)) |>
+  dplyr::ungroup()
+
+# Add initial bsp_id and rtg_d as predictors
+data = data |>
+  dplyr::group_by(id) |>
+  dplyr::arrange(age, .by_group = TRUE) |>
+  dplyr::mutate(
+    init_bsp_id = dplyr::first(bsp_id),
+    init_rtg_d  = dplyr::first(rtg_d),
+    h3_rtg_d  = if (dplyr::n_distinct(age) < 2) {
+      NA_real_
+    } else {
+      round(stats::approx(x = age, y = rtg_d, xout = age - 3, rule = 1, ties = mean)$y)
+    }
+  ) |>
+  dplyr::ungroup()
+
+# Set data
+bspid = set_data(bspid, data)
+```
+
+## Hurdle Object Instantiation
+```{r Hurdle Instantiation}
+hurdle = methods::new("Hurdle", data = bspid@data, split_year = 2020)
+```
+
+# Training
+
+## Shared Split
+
+Der gemeinsame Split wird einmalig auf den BSPID-spezifischen Daten erstellt und
+als `train_ids`-Vektor an Stage 1 und Stage 2 übergeben. Stratifiziert wird nach
+dem schwersten beobachteten Schaden (max rtg_d) pro Bruecke.
+
+```{r Shared Split}
+set.seed(shared_seed)
+
+bspid = set_data(bspid, hurdle@train_data)
+
+split_prep = bspid@data |>
+  dplyr::mutate(gsplitvar = sapply(strsplit(id, "_"), `[`, 1)) |>
+  dplyr::group_by(gsplitvar) |>
+  dplyr::mutate(strata_split = factor(max(rtg_d))) |>
+  dplyr::ungroup()
+
+shared_split = rsample::group_initial_split(
+  data   = split_prep,
+  group  = "gsplitvar",
+  strata = "strata_split",
+  prop   = shared_prop
+)
+
+train_ids = unique(rsample::training(shared_split)$gsplitvar)
+test_ids  = unique(rsample::testing(shared_split)$gsplitvar)
+```
+
+## Binary Classification
+
+<h4> Setup </h4>
+
+Ziel: Vorhersage ob sich `rtg_d` oder `bsp_id` aendert (`change = 1`) oder nicht
+(`change = 0`).
+
+```{r Stage 1 - Change-Spalte}
+global_train_data_binclass = hurdle@train_data |>
+  dplyr::group_by(id) |>
+  dplyr::arrange(age, .by_group = TRUE) |>
+  dplyr::mutate(
+    change = as.numeric(
+      any(diff(rtg_d) > 0) |
+        any(dplyr::lag(bsp_id) != bsp_id, na.rm = TRUE)
+    )
+  ) |>
+  dplyr::ungroup()
+
+bspid_binclass             = set_data(bspid, global_train_data_binclass)
+bspid_binclass@target_name = "Change [0: No, 1: Yes]"
+```
+
+<h4> Training </h4>
+
+```{r Stage 1 - Training}
+hurdle@classification_model = damageRF::binary_classification(
+  self                = bspid_binclass,
+  model               = damageRF::hurdle_rf6,
+  target              = "change",
+  train_ids           = train_ids,
+  pred_threshold_mode = "standard",
+  # pred_threshold_mode = "best_sens",
+  # min_sensitivity     = 0.90,
+  test_run            = test_run
+)
+```
+
+<h4> Metrics </h4>
+
+```{r Stage 1 - Results}
+plotter(hurdle@classification_model)
+```
+
+## Regression
+
+<h4> Setup </h4>
+
+Ziel: Vorhersage von `rtg_d` auf Beobachtungen wo `change == 1`.
+
+```{r}
+global_train_data_regression = global_train_data_binclass |>
+  dplyr::filter(change == 1) |>
+  dplyr::select(-change)
+
+bspid_regression = set_data(bspid, global_train_data_regression)
+```
+
+<h4> Training </h4>
+
+```{r Stage 2 - Training}
+hurdle@regression_model = train_groups(
+  self      = bspid_regression,
+  model     = damageRF::hurdle_rf7,
+  target    = bspid_regression@target_col,
+  test_run  = test_run,
+  train_ids = train_ids
+)
+```
+
+<h4> Metrics </h4>
+
+```{r Stage 2 - Results}
+plotter(hurdle@regression_model@models[[3]], target_name = "rtg_d")
+```
+
+# Testing
+
+## Held-out Timeseries
+
+```{r Held-out}
+hurdle = predict(hurdle, "holdout")
+hurdle@cls_res    # [,c("id", "inspection_yr", "bsp_id", "rtg_d", "pred")]
+hurdle@reg_res    # [,c("id", "inspection_yr", "bsp_id", "rtg_d", "q0.5")]
+hurdle@arreg_res  # [[1]][,c("id", "inspection_yr", "bsp_id", "rtg_d", "q0.5")]
+
+plot_results(hurdle, testset = "holdout")
+```
+
+
+## Temporal Split
+
+```{r Temporal Split}
+hurdle = predict(hurdle, "tempsplit")
+hurdle@cls_res
+hurdle@reg_res
+hurdle@arreg_res
+
+plot_results(hurdle, testset = "tempsplit", mode = "reg", n = 64)
+
+```

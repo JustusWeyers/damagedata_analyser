@@ -126,19 +126,21 @@ fulldata_bast = dplyr::left_join(
 
 # skimr::skim(fulldata_bast)
 
+# Remove data tithout bast joins
+fulldata_bast = fulldata_bast |> 
+  dplyr::filter(!is.na(bauwerksname))
+
 # save_dataset(fulldata_bast, "output/fulldata_bast.db")
+
 ```
 
 
 ```{r}
 # Controll
 
-# sk = skimr::skim(fulldata_bast)
-# min(sk$complete_rate[sk$skim_variable %in% colnames(bast_data)])
-
 coords = fulldata_bast |>
   dplyr::filter(!is.na(X.Y.UTM.32N)) |>
-  dplyr::select(X.Y.UTM.32N, ort) |> 
+  dplyr::select(X.Y.UTM.32N, ort, bsp_id) |> 
   dplyr::distinct()
 
 map_data = coords |> 
@@ -153,7 +155,7 @@ map_data = coords |>
 leaflet::leaflet(map_data) |>
   leaflet::addTiles() |>
   leaflet::addCircleMarkers(
-    label = ~ort
+    label = ~bsp_id
   )
 ```
 
@@ -199,7 +201,10 @@ elevation = methods::new(
     "../01insight/data/bkg/dgm1000.utm32s.xyzascii/dgm1000.utm32s.xyzascii/dgm1000/dgm1000_utm32s.prj"
   )[1]
 )
+```
 
+
+```{r}
 mystats_hyras = dwddata::geo_stats(hyras, points = points)
 mystats_icedays = dwddata::geo_stats(icedays, points = points)
 mystats_summerdays = dwddata::geo_stats(summerdays, points = points)
