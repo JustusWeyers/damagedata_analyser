@@ -27,7 +27,7 @@ setClass(
     age_col = "age",
     id_col = "id",
     bspid_col = "bsp_id",
-    target_name = "Value D [-]",
+    target_name = "Rating D [-]",
     age_name = "Age [a]",
     models = list(),
     bspid_codes = data.frame(),
@@ -243,7 +243,8 @@ setGeneric("set_data", function(self, data) {
 })
 
 setMethod("set_data", "BSPID", function(self, data) {
-  self@data <- data[startsWith(data$bsp_id, self@bspid),]
+  self@data <- data[startsWith(as.character(data$bsp_id), self@bspid),] |>
+    dplyr::mutate(dplyr::across(dplyr::where(is.character) & !dplyr::all_of("id"), as.factor))
   return(self)
 })
 
@@ -389,11 +390,11 @@ setMethod("plot_target_age", "BSPID", function(self, bygroup = FALSE, interactiv
 })
 
 #' @export
-setGeneric("binary_classification", function(self, model, target = NA, testrun = FALSE, ...) {
+setGeneric("binary_classification", function(self, model, target = NA, test_run = FALSE, ...) {
   standardGeneric("binary_classification")
 })
 
-setMethod("binary_classification", "BSPID", function(self, model, target = NA, testrun = FALSE, ...) {
+setMethod("binary_classification", "BSPID", function(self, model, target = NA, test_run = FALSE, ...) {
 
   if (is.na(target)) {
     target = self@target_col
@@ -405,7 +406,7 @@ setMethod("binary_classification", "BSPID", function(self, model, target = NA, t
     id_vars = self@id_vars,
     target_vars = self@target_vars,
     target = target,
-    testrun = testrun,
+    test_run = test_run,
     time_ax = self@age_col,
     ...
   )
@@ -414,11 +415,11 @@ setMethod("binary_classification", "BSPID", function(self, model, target = NA, t
 })
 
 #' @export
-setGeneric("train_groups", function(self, model, target = NA, testrun = FALSE, ...) {
+setGeneric("train_groups", function(self, model, target = NA, test_run = FALSE, path = NULL, ...) {
   standardGeneric("train_groups")
 })
 
-setMethod("train_groups", "BSPID", function(self, model, target = NA, testrun = FALSE, ...) {
+setMethod("train_groups", "BSPID", function(self, model, target = NA, test_run = FALSE, path = NULL, ...) {
 
   if (is.na(target)) {
     target = self@target_col
@@ -426,19 +427,85 @@ setMethod("train_groups", "BSPID", function(self, model, target = NA, testrun = 
 
   self@models[names(self@groups)] = lapply(seq_along(self@groups), function(i) {
 
-    model(
+    m = model(
       identity = setNames(self@groups[i], names(self@groups)[i]),
       data = self@data[self@data[[self@bspid_col]] %in% self@groups[[i]],],
       id = self@id_col,
       id_vars = self@id_vars,
       target_vars = self@target_vars,
       target = target,
-      testrun = testrun,
+      test_run = test_run,
       time_ax = self@age_col,
       ...
     )
 
+    if (!is.null(path)) saveRDS(m, file.path(path, paste0(names(self@groups)[i], ".rds")))
+
+    m
   })
 
   return(self)
 })
+
+#' @export
+setGeneric("predict", function(self, model, ...) {
+  standardGeneric("predict")
+})
+
+setMethod("predict", "BSPID", function(self, model) {
+
+  if (!is.character(model)) stop("model must be a character vector of model name(s)")
+
+  # Classification path: single model with a best_threshold
+  if (length(model) == 1 &&
+      !is.null(self@models[[model]]@prediction$best_threshold)) {
+
+    m     = self@models[[model]]
+    baked = suppressWarnings(recipes::bake(m@trained_model$recipe, new_data = self@data))
+
+    return(
+      self@data |>
+        dplyr::mutate(
+          pred_prob = stats::predict(m@trained_model$fit, data = baked)$predictions[, "1"]
+        ) |>
+        dplyr::group_by(id) |>
+        dplyr::mutate(
+          pred = as.numeric(any(pred_prob >= m@prediction$best_threshold))
+        ) |>
+        dplyr::ungroup()
+    )
+  }
+
+  # Regression path: route each id to group model(s) via init_bsp_id (stable)
+  # All rows of an id are predicted by the group if its init_bsp_id is a member
+  group_map = tibble::enframe(self@groups, name = "group", value = self@bspid_col) |>
+    tidyr::unnest(self@bspid_col) |>
+    dplyr::mutate(dplyr::across(dplyr::all_of(self@bspid_col), as.character))
+
+  id_group_map = self@data |>
+    dplyr::distinct(id, init_bsp_id) |>
+    dplyr::mutate(init_bsp_id = as.character(init_bsp_id)) |>
+    dplyr::left_join(group_map, by = setNames(self@bspid_col, "init_bsp_id")) |>
+    dplyr::filter(!is.na(group)) |>
+    dplyr::distinct(id, group)
+
+  self@data |>
+    dplyr::left_join(id_group_map, by = "id") |>
+    dplyr::filter(group %in% model) |>
+    dplyr::group_split(group) |>
+    purrr::map_dfr(function(chunk) {
+      grp   = unique(chunk$group)
+      m     = self@models[[grp]]
+      baked = suppressWarnings(recipes::bake(m@trained_model$recipe, new_data = chunk |>
+        dplyr::mutate(dplyr::across(dplyr::where(is.character), as.factor))))
+      quant_matrix = stats::predict(
+        m@trained_model$fit,
+        data      = baked,
+        type      = "quantiles",
+        quantiles = m@trained_model$quantiles
+      )$predictions
+      colnames(quant_matrix) = paste0("q", m@trained_model$quantiles)
+      dplyr::bind_cols(chunk, as.data.frame(quant_matrix))
+    })
+})
+

@@ -1,58 +1,46 @@
-#' Title: Random Forest 7 - Quantile Regression Forest
+#' Title: Hurdle RF - Stage 2: Quantile Regression Forest
 #'
-#' @description Quantile regression forest based on RF5. Tuning uses standard
-#'   regression (mae/rmse) to find optimal hyperparameters; the final model is
-#'   refitted with quantreg = TRUE to produce full quantile predictions.
-#' @param identity Identity (bspid / group of bspids)
-#' @param data A data.frame dataset
-#' @param id Name of id variable
-#' @param id_vars Character vector of id-like variables to exclude
-#' @param target_vars Character vector of target-like variables to exclude
-#' @param target Name of target variable
-#' @param row_limit Optional: Limit number of rows in data
-#' @param trees Optional: Number of trees
-#' @param grid Optional: Tuning grid size
-#' @param n_boots Optional: Number of bootstrap resamples
-#' @param seed Optional: Seed
-#' @param tune_metric Optional: "mae" or "rmse"
-#' @param train_ratio Optional: Proportion of train data. Default: 0.80
-#' @param n Optional: Lower limit of entries per target value
-#' @param quantiles Optional: Quantile levels to predict
-#' @param randomize_target Optional: Shuffle target for null model
-#' @param testrun Optional: Speed up for testing
+#' @description Based on rf7. Accepts an external train_ids vector to enforce a
+#'   shared train/test split across the hurdle model pipeline. When change_col
+#'   is provided the training data is filtered to observations where a change
+#'   actually occurred (hurdle filter), while the test data remains complete for
+#'   fair evaluation. When train_ids and change_col are both NULL the function
+#'   behaves identically to rf7.
+#' @param train_ids Optional: character vector of bridge IDs (gsplitvar, i.e.
+#'   the part of id before the first "_") assigned to training. When provided
+#'   the internal splitting loop is skipped.
+#' @param change_col Optional: name of a logical/binary column in data that is
+#'   TRUE (or 1) for rows where a change occurred. When provided training is
+#'   restricted to change observations only (hurdle filter). The column is
+#'   automatically excluded from predictors.
 #'
-#' @return Object of class RF
-
+#' @inheritParams rf7
 #' @export
-rf7 = function(
+hurdle_rf7 = function(
 
   identity, data, id, id_vars, target_vars, target, time_ax, row_limit = NA,
-  trees = 1000, grid = 11,  n_boots = 30, seed = NA, tune_metric = "mae",
-  train_ratio = 0.80, n = 30, randomize_target = FALSE, testrun = FALSE,
-  quantiles = c(0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95)
+  trees = 1000, grid = 11, n_boots = 30, seed = NA, tune_metric = "mae",
+  train_ratio = 0.80, n = 30, randomize_target = FALSE, test_run = FALSE,
+  quantiles = c(0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95),
+  train_ids  = NULL,
+  change_col = NULL
 
   ) {
 
   ### -- Start ------------------------------
 
-  # Start time
   start = Sys.time()
 
-  # Start logs
-  title = paste0("RF7 - Ordinal Regression via QRF (", target, ")")
+  title = paste0("Hurdle RF7 - QRF (", target, ")")
   print(paste0(rep("-", nchar(title)), collapse = ""))
   print(title)
   print(start)
   print(paste0(rep("-", nchar(title)), collapse = ""))
 
+  ### -- Testrun? ------------------------
 
-  ### -- Do testrun? ------------------------
-
-  # Eventually limit tuning parameters
-  if (testrun) {
-
+  if (test_run) {
     print(">> This is a testrun")
-
     row_limit = 5000
     trees     = 500
     grid      = 3
@@ -73,27 +61,27 @@ rf7 = function(
 
   print("02. Variable/Column roles")
 
-  # Break if internal name "target" is already a column name in data
   if ("target" %in% colnames(data)) {
-    stop("Error in rf7: Found 'target' in colnames(data)")
+    stop("Error in hurdle_rf7: Found 'target' in colnames(data)")
   }
 
-  # Restrict id_vars and target_vars to columns actually present in data
   id_vars     = intersect(colnames(data), id_vars)
   target_vars = setdiff(intersect(colnames(data), target_vars), target)
 
-  # Rename to internal names so code is independent of caller-supplied names
+  # Exclude change_col from predictors
+  if (!is.null(change_col)) {
+    target_vars = union(target_vars, intersect(colnames(data), change_col))
+  }
+
   colnames(data)[colnames(data) == target] = "target"
   colnames(data)[colnames(data) == id]     = "id"
 
-  # Fetch names of predictors
-  pred_vars   = setdiff(colnames(data), c("id", "target", id_vars, target_vars))
+  pred_vars = setdiff(colnames(data), c("id", "target", id_vars, target_vars))
 
   ### -- 03. Data preparation ---------------
 
   print("03. Data preparation")
 
-  # Eventually limit rows of given data (primarily for faster testing)
   if (!is.na(row_limit)) {
     n_ids = ceiling(row_limit / (nrow(data) / dplyr::n_distinct(data$id)))
     n_ids = min(n_ids, dplyr::n_distinct(data$id))
@@ -101,79 +89,89 @@ rf7 = function(
     data = data[data$id %in% sampled_ids, ]
   }
 
-  # Eventually randomize target variable for model validation
   if (randomize_target) {
-    data$target = sample(
-      data$target, size = length(data$target), replace = FALSE
-    )
+    data$target = sample(data$target, size = length(data$target), replace = FALSE)
   }
 
-  # Factorize characters (excluding id) and make target numeric for regression
   data = data |>
     dplyr::mutate(dplyr::across(dplyr::where(is.character) & !dplyr::all_of("id"), as.factor)) |>
     dplyr::mutate(target = as.numeric(target)) |>
     tidyr::drop_na(target)
 
-  # Drop target levels with too few observations to ensure meaningful splits
   data = data |>
     dplyr::group_by(target) |>
     dplyr::filter(dplyr::n() > n) |>
     dplyr::ungroup()
 
-  # Gini-coefficient as metric for target imbalance
   gini = DescTools::Gini(prop.table(table(as.factor(data$target))))
 
   ### -- 04. Splitting ----------------------
 
   print("04. Splitting")
 
-  # Make sure to group split only by first part of id (separated by "_")
   if (any(grepl("_", as.character(data$id)))) {
     data$gsplitvar = sapply(strsplit(data$id, "_"), `[`, 1)
   } else {
     data$gsplitvar = data$id
   }
 
-  # Strata = worst observed target per gsplitvar group (must be constant within split group)
   data = data |>
     dplyr::group_by(gsplitvar) |>
     dplyr::mutate(strata = factor(max(target))) |>
     dplyr::ungroup()
 
-  # Retry 1000 splits if test set is missing any target level present in train
-  for (i in 1:1000) {
+  if (!is.null(train_ids)) {
 
-    # Rsample groupwise split over strata
-    data_split = rsample::group_initial_split(
-      data = data, group = "gsplitvar", strata = "strata", prop = train_ratio
-    )
-
-    # Create test and train dataset
-    train_data = rsample::training(data_split) |>
+    # Use externally provided training IDs
+    train_data = data[data$gsplitvar %in% train_ids, ] |>
       dplyr::select(-strata, -gsplitvar)
-    test_data  = rsample::testing(data_split)  |>
+    test_data  = data[!data$gsplitvar %in% train_ids, ] |>
       dplyr::select(-strata, -gsplitvar)
 
-    # Test if split was succesfull
-    if (
-      identical(
+  } else {
+
+    for (i in 1:1000) {
+
+      data_split = rsample::group_initial_split(
+        data = data, group = "gsplitvar", strata = "strata", prop = train_ratio
+      )
+
+      train_data = rsample::training(data_split) |> dplyr::select(-strata, -gsplitvar)
+      test_data  = rsample::testing(data_split)  |> dplyr::select(-strata, -gsplitvar)
+
+      if (identical(
         levels(factor(train_data$target)),
-        levels(factor(test_data$target)))
-      ) {
-      break
-    } else {
-      if (i == 1000) stop("Stopped splitting (too imbalanced strata)")
-      if (i %% 100 == 0) print(paste0("Try split ", i, "/1000"))
-      seed = 1000 + i
-      set.seed(seed)
+        levels(factor(test_data$target))
+      )) {
+        break
+      } else {
+        if (i == 1000) stop("Stopped splitting (too imbalanced strata)")
+        if (i %% 100 == 0) print(paste0("Try split ", i, "/1000"))
+        seed = 1000 + i
+        set.seed(seed)
+      }
     }
+
+  }
+
+  # Hurdle filter: restrict both train and test to observed changes only
+  if (!is.null(change_col)) {
+    n_train_before = nrow(train_data)
+    n_test_before  = nrow(test_data)
+    train_data = train_data |>
+      dplyr::filter(.data[[change_col]] == TRUE | .data[[change_col]] == 1)
+    test_data = test_data |>
+      dplyr::filter(.data[[change_col]] == TRUE | .data[[change_col]] == 1)
+    print(paste0(
+      "04. Hurdle filter: train ", n_train_before, " -> ", nrow(train_data),
+      " | test ", n_test_before, " -> ", nrow(test_data), " (changes only)"
+    ))
   }
 
   ### -- 05. Bootstrapping ------------------
 
   print("05. Bootstrapping")
 
-  # Create bootstrapped resamples
   boots = rsample::bootstraps(train_data, strata = target, times = n_boots)
 
   ### -- 06. Recipe -------------------------
@@ -197,7 +195,6 @@ rf7 = function(
 
   print("07. Workflow")
 
-  # Standard regression spec for (without quantreg)
   ranger_spec = parsnip::rand_forest(
     mtry  = tune::tune(),
     min_n = tune::tune(),
@@ -226,7 +223,6 @@ rf7 = function(
 
   best_params = tune::select_best(x = ranger_tune, metric = tune_metric)
 
-  # Final model with best hyperparams (and with quantreg)
   qrf_spec = ranger_spec |>
     tune::finalize_model(best_params) |>
     parsnip::set_engine("ranger", quantreg = TRUE)
@@ -236,8 +232,7 @@ rf7 = function(
     workflows::add_model(qrf_spec) |>
     parsnip::fit(data = train_data)
 
-  final_rf = final_wf_fitted |>
-    workflows::extract_fit_parsnip()
+  final_rf = final_wf_fitted |> workflows::extract_fit_parsnip()
 
   ### -- 10. Fitting (Normal RF) ------------
 
@@ -245,12 +240,10 @@ rf7 = function(
 
   levels_fac = levels(factor(data$target))
 
-  train_data_fac <- train_data |>
-    dplyr::mutate(target = factor(target, levels = levels_fac))
-  test_data_fac  <- test_data  |>
-    dplyr::mutate(target = factor(target, levels = levels_fac))
+  train_data_fac = train_data |> dplyr::mutate(target = factor(target, levels = levels_fac))
+  test_data_fac  = test_data  |> dplyr::mutate(target = factor(target, levels = levels_fac))
 
-  rec_clf <- recipes::recipe(target ~ ., data = train_data_fac) |>
+  rec_clf = recipes::recipe(target ~ ., data = train_data_fac) |>
     recipes::update_role(dplyr::all_of(id_vars),     new_role = "id") |>
     recipes::step_rm(recipes::has_role("id")) |>
     recipes::update_role(dplyr::all_of(target_vars), new_role = "target_var") |>
@@ -259,7 +252,7 @@ rf7 = function(
     recipes::step_novel(recipes::all_nominal_predictors()) |>
     recipes::step_unknown(recipes::all_nominal_predictors(), new_level = "unknown")
 
-  clf_spec <- parsnip::rand_forest(
+  clf_spec = parsnip::rand_forest(
     mtry  = best_params$mtry,
     min_n = best_params$min_n,
     trees = trees
@@ -267,40 +260,36 @@ rf7 = function(
     parsnip::set_mode("classification") |>
     parsnip::set_engine("ranger", probability = TRUE)
 
-  clf_fitted <- workflows::workflow() |>
+  clf_fitted = workflows::workflow() |>
     workflows::add_recipe(rec_clf) |>
     workflows::add_model(clf_spec) |>
     parsnip::fit(data = train_data_fac)
 
-  probs <- stats::predict(
-    clf_fitted,
-    new_data = test_data_fac,
-    type = "prob"
-  ) |>
+  probs = stats::predict(clf_fitted, new_data = test_data_fac, type = "prob") |>
     dplyr::bind_cols(truth = test_data_fac$target) |>
-    dplyr::mutate(truth = factor(truth, levels = levels(test_data_fac$target)))
+    dplyr::mutate(truth = droplevels(factor(truth, levels = levels(test_data_fac$target))))
 
-  est_cols <- grep("^\\.pred_", colnames(probs), value = TRUE)
+  present_levels = levels(probs$truth)
+  est_cols = paste0(".pred_", present_levels)
 
-  curve_to_df <- function(curve_fn, x_expr, y_expr, type_label) {
+  curve_to_df = function(curve_fn, x_expr, y_expr, type_label) {
     if (length(levels(probs$truth)) == 2) {
-      df <- purrr::map_dfr(est_cols, \(col) {
-        lvl <- sub("^\\.pred_", "", col)
-        ev  <- if (lvl == levels(probs$truth)[1]) "first" else "second"
+      df = purrr::map_dfr(est_cols, \(col) {
+        lvl = sub("^\\.pred_", "", col)
+        ev  = if (lvl == levels(probs$truth)[1]) "first" else "second"
         curve_fn(probs, truth = truth, !!rlang::sym(col), event_level = ev) |>
           dplyr::mutate(.level = lvl)
       })
     } else {
-      df <- curve_fn(probs, truth = truth, !!!rlang::syms(est_cols))
+      df = curve_fn(probs, truth = truth, !!!rlang::syms(est_cols))
     }
     df |>
-      dplyr::transmute(.level, x = {{ x_expr }}, y = {{ y_expr }}, type = type_label) |>
+      dplyr::transmute(.level, x = {{x_expr}}, y = {{y_expr}}, type = type_label) |>
       data.frame()
   }
 
-  roc_df <- curve_to_df(yardstick::roc_curve, 1 - specificity, sensitivity, "ROC")
-  pr_df  <- curve_to_df(yardstick::pr_curve,  recall,           precision,  "PR")
-
+  roc_df = curve_to_df(yardstick::roc_curve, 1 - specificity, sensitivity, "ROC")
+  pr_df  = curve_to_df(yardstick::pr_curve,  recall,           precision,  "PR")
 
   ### -- 11. Predictions - Random Forest-----
 
@@ -308,12 +297,10 @@ rf7 = function(
 
   levels_num = sort(unique(data$target))
 
-  # Bake test data through the fitted recipe (ranger needs preprocessed input)
   prepped_recipe = workflows::extract_recipe(final_wf_fitted, estimated = TRUE)
   baked_test     = recipes::bake(prepped_recipe, new_data = test_data) |>
     dplyr::select(-target)
 
-  # Quantile predictions directly from ranger (parsnip doesn't support type = "quantiles")
   quant_matrix = stats::predict(
     final_rf$fit, data = baked_test, type = "quantiles", quantiles = quantiles
   )$predictions
@@ -336,30 +323,50 @@ rf7 = function(
       dplyr::pull(.pred_lag)
   }
 
-  # 12.1 Simply last value
-  lag_1_val = lag_n(
-    id = test_data[["id"]],
-    time = test_data[[time_ax]],
-    truth = quant_preds$truth,
-    n = 1
-  )
-  # 12.2 Simply majority value
+  lag_1_val    = lag_n(id = test_data[["id"]], time = test_data[[time_ax]], truth = quant_preds$truth, n = 1)
   majority_val = as.numeric(names(which.max(table(train_data$target))))
-  # 12.3 Simply mean value
   mean_val     = mean(train_data$target, na.rm = TRUE)
-  # 12.4 Simply a random value
-  random_val = sample(train_data$target, size = nrow(quant_preds), replace = TRUE)
+  random_val   = sample(train_data$target, size = nrow(quant_preds), replace = TRUE)
 
-  # Append to quant_preds
+  linear_trend_fn = function(train_id, train_time, train_truth, test_id, test_time) {
+    train_df    = dplyr::tibble(id = train_id, time = train_time, truth = train_truth)
+    global_coef = stats::coef(stats::lm(truth ~ time, data = train_df))
+    id_trends   = train_df |>
+      dplyr::group_by(id) |>
+      dplyr::filter(dplyr::n() >= 2) |>
+      dplyr::summarise(
+        intercept = stats::lm(truth ~ time)$coefficients["(Intercept)"],
+        slope     = stats::lm(truth ~ time)$coefficients["time"],
+        .groups   = "drop"
+      )
+    dplyr::tibble(id = test_id, time = test_time, .row = seq_along(test_id)) |>
+      dplyr::left_join(id_trends, by = "id") |>
+      dplyr::mutate(
+        intercept = dplyr::if_else(is.na(intercept), unname(global_coef["(Intercept)"]), intercept),
+        slope     = dplyr::if_else(is.na(slope),     unname(global_coef["time"]),        slope),
+        .pred     = intercept + slope * time
+      ) |>
+      dplyr::arrange(.row) |>
+      dplyr::pull(.pred)
+  }
+
+  linear_trend_val = linear_trend_fn(
+    train_id    = train_data[["id"]],
+    train_time  = train_data[[time_ax]],
+    train_truth = train_data$target,
+    test_id     = test_data[["id"]],
+    test_time   = test_data[[time_ax]]
+  )
+
   quant_preds = quant_preds |>
     dplyr::mutate(
-      .pred_majority = majority_val,
-      .pred_mean     = mean_val,
-      .pred_lag_1    = lag_1_val,
-      .pred_random = random_val
+      .pred_majority      = majority_val,
+      .pred_mean          = mean_val,
+      .pred_lag_1         = lag_1_val,
+      .pred_random        = random_val,
+      .pred_linear_trend  = linear_trend_val
     )
 
-  # Median (nearest quantile to 0.5) as point estimate for metric compatibility
   q_med = paste0("q", quantiles[which.min(abs(quantiles - 0.5))])
 
   preds = quant_preds |>
@@ -375,13 +382,7 @@ rf7 = function(
 
   print("13. Metrics")
 
-  model_metrics = purrr::map_dfr(
-    .x   = levels(preds$truth),
-    .f   = metrics_df,
-    pred = preds
-  )
-
-  print("Baseline Metrics")
+  model_metrics = purrr::map_dfr(.x = levels(preds$truth), .f = metrics_df, pred = preds)
 
   truth_num = as.numeric(as.character(preds$truth))
 
@@ -390,29 +391,23 @@ rf7 = function(
     mean(ifelse(e >= 0, q * e, (q - 1) * e), na.rm = TRUE)
   }
 
-  point_pinball = function(pred_vec) {
-    mean(sapply(quantiles, function(q) pinball_loss(truth_num, pred_vec, q)), na.rm = TRUE)
-  }
-
-  model_pinball = mean(sapply(quantiles, function(q) {
-    pinball_loss(truth_num, preds[[paste0("q", q)]], q)
-  }))
+  point_pinball  = function(pred_vec) mean(sapply(quantiles, function(q) pinball_loss(truth_num, pred_vec, q)), na.rm = TRUE)
+  model_pinball  = mean(sapply(quantiles, function(q) pinball_loss(truth_num, preds[[paste0("q", q)]], q)))
 
   q_lo = paste0("q", quantiles[1])
   q_hi = paste0("q", quantiles[length(quantiles)])
 
   point_preds = list(
-    RF       = preds$.pred,
-    majority = preds$.pred_majority,
-    mean     = preds$.pred_mean,
-    lag_1    = preds$.pred_lag_1,
-    random   = preds$.pred_random
+    RF           = preds$.pred,
+    majority     = preds$.pred_majority,
+    mean         = preds$.pred_mean,
+    lag_1        = preds$.pred_lag_1,
+    random       = preds$.pred_random,
+    linear_trend = preds$.pred_linear_trend
   )
 
-  # skill_mae = 0: no better than mean; skill_mae = 1: perfect; negative: worse than mean
   mae_ref = mean(abs(truth_num - point_preds$mean), na.rm = TRUE)
 
-  # RF uses the full quantile matrix for pinball; baselines use point predictions only
   baseline_metrics = purrr::map_dfr(names(point_preds), function(nm) {
     p        = point_preds[[nm]]
     mae      = mean(abs(truth_num - p), na.rm = TRUE)
@@ -435,7 +430,6 @@ rf7 = function(
 
   best_spec = ranger_spec |> tune::finalize_model(best_params)
 
-  # Permutation: unbiased but slow; impurity: fast but biased toward high-cardinality features
   compute_vi = function(importance_type) {
     spec = best_spec |> parsnip::set_engine("ranger", importance = importance_type)
     workflows::workflow() |>
@@ -459,12 +453,10 @@ rf7 = function(
 
     Class = "RF",
 
-    # Info
     identity        = identity,
     start           = start,
     end             = end,
 
-    # Model parameter
     seed            = seed,
     trees           = trees,
     n_boots         = n_boots,
@@ -481,8 +473,6 @@ rf7 = function(
       txt_spacer("Number of trees:", trees,                        35)
     ),
 
-    # Data
-
     target_var       = target,
 
     roles            = list(
@@ -494,14 +484,11 @@ rf7 = function(
     train_data       = train_data,
     test_data        = test_data,
 
-    # Model setup
     ranger_spec      = ranger_spec,
     recipe           = as.character(rec$steps),
 
-    # Model tuning
     tune_metrics     = tune::collect_metrics(ranger_tune),
 
-    # Results
     gini             = gini,
     best_params      = best_params,
     final_rf         = catch_console(final_rf),
@@ -515,7 +502,6 @@ rf7 = function(
     perm_importance  = perm_importance,
     gini_importance  = gini_importance,
 
-    # Trained model
     trained_model    = list(
       recipe    = prepped_recipe,
       fit       = final_rf$fit,

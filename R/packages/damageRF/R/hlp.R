@@ -74,6 +74,7 @@ kappa_linear_weighted = function(truth_num, pred_num) {
   round((po - pe) / (1 - pe), 3)
 }
 
+
 txt_spacer = function(attr, val, len = 23) {
   paste0(
     attr,

@@ -11,6 +11,7 @@ confusion_matrix = function(cm) {
     ggplot2::scale_fill_gradient(low = "white", high = "#2C7BB6", labels = scales::percent) +
     ggplot2::scale_x_discrete(position = "top") +
     ggplot2::labs(
+      title = "Confusion Matrix",
       x = "Prediction",
       y = "Truth",
       fill = "Anteil"
@@ -19,7 +20,8 @@ confusion_matrix = function(cm) {
     ggplot2::theme(
       panel.grid = ggplot2::element_blank(),
       axis.text  = ggplot2::element_text(size = 12),
-      legend.position = "none"
+      legend.position = "none",
+      plot.title.position = "plot"
     )
 
   return(p)

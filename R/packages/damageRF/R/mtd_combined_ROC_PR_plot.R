@@ -32,8 +32,10 @@ setMethod("combined_ROC_PR_plot", "RF", function(self) {
       axis.text.x = ggplot2::element_text(size = 8, angle = 55, hjust = 1),
       axis.text.y = ggplot2::element_text(size = 8),
       axis.title.x = ggplot2::element_text(size = 8),
-      axis.title.y = ggplot2::element_text(size = 8)
+      axis.title.y = ggplot2::element_text(size = 8),
+      plot.title.position = "plot"
     ) +
     ggplot2::guides(color = ggplot2::guide_legend(title = NULL)) +
-    ggplot2::coord_fixed(ratio = 1)
+    ggplot2::coord_fixed(ratio = 1) +
+    ggplot2::labs(title = "ROC / PR Curves")
 })

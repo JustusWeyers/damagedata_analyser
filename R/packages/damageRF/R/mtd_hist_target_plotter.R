@@ -52,7 +52,8 @@ setMethod("hist_target_plotter", "RF", function(self, target_name) {
     ) +
     ggplot2::theme_minimal() +
     ggplot2::scale_fill_grey() +
-    ggplot2::theme(legend.position = "none")
+    ggplot2::theme(legend.position = "none", plot.title.position = "plot") +
+    ggplot2::labs(title = "Target Distribution")
 
   if (!is.na(target_name)) {
     p = p + ggplot2::labs(x = target_name)

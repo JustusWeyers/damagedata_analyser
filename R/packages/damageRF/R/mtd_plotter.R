@@ -22,16 +22,39 @@ setMethod("plotter", "RF", function(self, target_name = NA) {
     nrow = 1
   )
 
-  middle = cowplot::plot_grid(
-    vip::vip(self@perm_importance, geom = "point") +
-      ggplot2::ylab("Importance ('permutation')") + ggplot2::theme_minimal(),
-    vip::vip(self@gini_importance, geom = "point") +
-      ggplot2::ylab("Gini Impurity ('impurity')") + ggplot2::theme_minimal(),
-    nrow = 2
-  )
+  threshold_df  = self@prediction$threshold_perf
+  thr_line_plot = if (is.data.frame(threshold_df) && nrow(threshold_df) > 0 &&
+                      all(c("sensitivity", "specificity") %in% threshold_df$.metric))
+    threshold_line_plotter(threshold_df, self@prediction$best_threshold) else NULL
 
-  right = if (nrow(self@roc_df) > 0 && nrow(self@pr_df) > 0)
+  oofb      = self@prediction$OOFB
+  dens_plot = if (!is.null(oofb) && is.data.frame(oofb) &&
+                  all(c(".pred_1", "target") %in% colnames(oofb)))
+  density_plotter(oofb, self@prediction$best_threshold) else NULL
+
+  middle_list = Filter(Negate(is.null), list(
+    vip::vip(self@perm_importance, geom = "point") +
+      ggplot2::labs(title = "Variable Importance (Permutation)", y = "Importance") +
+      ggplot2::theme_minimal() +
+      ggplot2::theme(plot.title.position = "plot"),
+    vip::vip(self@gini_importance, geom = "point") +
+      ggplot2::labs(title = "Variable Importance (Gini)", y = "Gini Impurity") +
+      ggplot2::theme_minimal() +
+      ggplot2::theme(plot.title.position = "plot"),
+    thr_line_plot
+  ))
+  middle = cowplot::plot_grid(plotlist = middle_list, nrow = length(middle_list))
+
+  roc_pr_plot = if (nrow(self@roc_df) > 0 && nrow(self@pr_df) > 0)
     combined_ROC_PR_plot(self) else NULL
+
+  right_list = Filter(Negate(is.null), list(roc_pr_plot, dens_plot))
+  right = if (length(right_list) > 0)
+    cowplot::plot_grid(
+      plotlist    = right_list,
+      nrow        = length(right_list),
+      rel_heights = c(2, 1)[seq_along(right_list)]
+    ) else NULL
 
   bottom_row = if (nrow(self@baseline_metrics) > 0)
     tableplotter(self@baseline_metrics) else NULL
@@ -72,16 +95,16 @@ setMethod("plotter", "BSPID", function(self, target_name = NA) {
 
   desc = get_desc(self)
 
-  plots = Map(function(model, group) {
+  plots = Map(function(model, model_name) {
     plotter(model, target_name = self@target_name) +
-      ggplot2::labs(subtitle = paste0(self@bspid, "-group: '", group, "'")) +
+      ggplot2::labs(subtitle = paste0(self@bspid, "-group: '", model_name, "'")) +
       ggplot2::theme(
         plot.subtitle = ggplot2::element_text(
           size = 8,
           hjust = 0.5
         )
       )
-  }, self@models, names(self@groups))
+  }, self@models, names(self@models))
 
   if (!is.na(desc[1]) & !is.na(desc[2])) {
     p = patchwork::wrap_plots(plots, ncol = 1) +
