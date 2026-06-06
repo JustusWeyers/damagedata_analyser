@@ -27,8 +27,14 @@ r_files    = Sys.getenv(x = "r_files", unset = here::here("R/"))
 db_path = here::here("output/fulldata_bast_clim_red.db")
 db_path = Sys.getenv(x = "db_path", unset = db_path)
 
+output_path = Sys.getenv("output_path", unset = "/app/output/")
+run_id      = paste0("run", format(Sys.Date(), format = "%Y%m%d"))
+run_id      = Sys.getenv("run_id",     unset = run_id)
+run_path    = file.path(output_path, run_id, bspid_code)
+dir.create(run_dir, recursive = TRUE, showWarnings = FALSE)
+
 bspid_code = Sys.getenv(x = "bspid_code", unset = "B006_03")
-test_run = Sys.getenv(x = "test_run", unset = TRUE)
+test_run = as.logical(Sys.getenv(x = "test_run", unset = "TRUE"))
 ```
 
 <h4> Pakete </h4>
@@ -49,7 +55,7 @@ sapply(files[startsWith(basename(files), "hlp_")], source)
 <h4> Modell Parameter </h4>
 
 ```{r Setup - Model Parameter}
-test_run = TRUE # Remove
+# test_run = TRUE
 shared_seed = 4242
 shared_prop = 0.80
 ```
@@ -64,7 +70,12 @@ db = DBI::dbConnect(RSQLite::SQLite(), db_path)
 workingdata_db = DBI::dbReadTable(db, "fulldata_bast_clim_red") |>
   dplyr::as_tibble() |>
   dplyr::rename(dplyr::any_of(setNames(names(translations), translations))) |>
-  dplyr::mutate(bsp_id = sub("-+$", "", bsp_id))
+  dplyr::select(-c("construction_type", "structure_name", "district_office", "maint_unit")) |> 
+  dplyr::mutate(
+    bsp_id = sub("-+$", "", bsp_id),
+    x = as.numeric(x),
+    y = as.numeric(y)
+  )
 
 DBI::dbDisconnect(db)
 ```
@@ -187,16 +198,14 @@ hurdle@classification_model = damageRF::binary_classification(
   target              = "change",
   train_ids           = train_ids,
   pred_threshold_mode = "standard",
-  # pred_threshold_mode = "best_sens",
-  # min_sensitivity     = 0.90,
   test_run            = test_run
-)
+  )
 ```
 
 <h4> Metrics </h4>
 
 ```{r Stage 1 - Results}
-plotter(hurdle@classification_model)
+# plotter(hurdle@classification_model)
 ```
 
 ## Regression
@@ -228,31 +237,5 @@ hurdle@regression_model = train_groups(
 <h4> Metrics </h4>
 
 ```{r Stage 2 - Results}
-plotter(hurdle@regression_model@models[[3]], target_name = "rtg_d")
-```
-
-# Testing
-
-## Held-out Timeseries
-
-```{r Held-out}
-hurdle = predict(hurdle, "holdout")
-hurdle@cls_res    # [,c("id", "inspection_yr", "bsp_id", "rtg_d", "pred")]
-hurdle@reg_res    # [,c("id", "inspection_yr", "bsp_id", "rtg_d", "q0.5")]
-hurdle@arreg_res  # [[1]][,c("id", "inspection_yr", "bsp_id", "rtg_d", "q0.5")]
-
-plot_results(hurdle, testset = "holdout")
-```
-
-
-## Temporal Split
-
-```{r Temporal Split}
-hurdle = predict(hurdle, "tempsplit")
-hurdle@cls_res
-hurdle@reg_res
-hurdle@arreg_res
-
-plot_results(hurdle, testset = "tempsplit", mode = "reg", n = 64)
-
+# plotter(hurdle@regression_model@models[[1]], target_name = "rtg_d")
 ```

@@ -74,7 +74,7 @@ shiny::renderUI({
   shiny::tagList(
     shiny::hr(),
     shiny::h4("Modellmetriken"),
-    shiny::plotOutput("plot_plotter", height = "800px")
+    shiny::plotOutput("plot_plotter", height = paste0(length(rds_data()@models)*600, "px"))
   )
 })
 ```

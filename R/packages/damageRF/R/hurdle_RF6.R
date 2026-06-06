@@ -167,6 +167,7 @@ hurdle_rf6 = function(
   print("Recipe")
 
   print(paste("  - rm ID-vars:", paste(id_vars, collapse = ", ")))
+  print(paste("  - rm pred-vars:", paste(pred_vars, collapse = ", ")))
   print(paste("  - rm target-vars:", paste(target_vars, collapse = ", ")))
 
   rec = recipes::recipe(target ~ ., data = train_data_fac) |>

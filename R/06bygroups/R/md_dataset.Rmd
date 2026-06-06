@@ -140,7 +140,7 @@ fulldata_bast = fulldata_bast |>
 
 coords = fulldata_bast |>
   dplyr::filter(!is.na(X.Y.UTM.32N)) |>
-  dplyr::select(X.Y.UTM.32N, ort, bsp_id) |> 
+  dplyr::select(X.Y.UTM.32N, ort) |> 
   dplyr::distinct()
 
 map_data = coords |> 
@@ -155,7 +155,7 @@ map_data = coords |>
 leaflet::leaflet(map_data) |>
   leaflet::addTiles() |>
   leaflet::addCircleMarkers(
-    label = ~bsp_id
+    label = ~ort
   )
 ```
 
@@ -205,9 +205,9 @@ elevation = methods::new(
 
 
 ```{r}
-mystats_hyras = dwddata::geo_stats(hyras, points = points)
-mystats_icedays = dwddata::geo_stats(icedays, points = points)
-mystats_summerdays = dwddata::geo_stats(summerdays, points = points)
+# mystats_hyras = dwddata::geo_stats(hyras, points = points)
+# mystats_icedays = dwddata::geo_stats(icedays, points = points)
+# mystats_summerdays = dwddata::geo_stats(summerdays, points = points)
 mystats_elevation = dwddata::geo_stats(elevation, points = points)
 
 split_metrics = function(stats_list) {
@@ -225,7 +225,7 @@ split_metrics = function(stats_list) {
   return(metric_matrices)
 }
 
-res = split_metrics(list(mystats_hyras, mystats_icedays, mystats_summerdays))
+res = split_metrics(list(mystats_hyras, mystats_icedays, mystats_summerdays, mystats_elevation))
 
 red = lapply(seq_along(res), function(i) {
   df = res[[i]]
@@ -242,7 +242,7 @@ clim = do.call(cbind, red)
 clim[!is.finite(as.matrix(clim))] <- 0
 pca = prcomp(clim, scale = TRUE, center = TRUE)
 
-fulldata_bast_clim = dplyr::left_join(
+fulldata_bast_clim = merge(
   fulldata_bast,
   coords |> 
     dplyr::select(-ort) |> 
@@ -257,14 +257,10 @@ fulldata_bast_clim = dplyr::left_join(
 fulldata_bast_clim_final = fulldata_bast_clim |> 
   tidyr::separate(X.Y.UTM.32N, sep = "/", into = c("x", "y"))
 
-save_dataset(fulldata_bast_clim_final, "output/fulldata_bast_clim.db")
+# save_dataset(fulldata_bast_clim_final, "output/fulldata_bast_clim.db")
 ```
 
-```{r}
-barplot(unique(fulldata_bast_clim$alter))
-```
-
-```{r}
+```{r, eval = FALSE}
 # Read fulldata
 db = DBI::dbConnect(RSQLite::SQLite(), here::here("output/fulldata_bast_clim.db"))
 fulldata_bast_clim = DBI::dbReadTable(db, "fulldata_bast_clim")
@@ -273,7 +269,6 @@ DBI::dbDisconnect(db)
 sf_df = fulldata_bast_clim |> 
   dplyr::slice_sample(n = 9999) |>
   dplyr::filter(!is.na(x) & !is.na(y)) |> 
-  # tidyr::separate(X.Y.UTM.32N, sep = "/", into = c("x", "y")) |> 
   sf::st_as_sf(coords = c("x", "y"))
 
 ggplot2::ggplot(sf_df, ggplot2::aes(color = clim_pc2)) +
@@ -285,3 +280,37 @@ ggplot2::ggplot(sf_df, ggplot2::aes(color = factor(trag_l_idx))) +
   ggplot2::geom_sf() +
   ggplot2::theme_minimal()
 ```
+
+```{r}
+# Unschöne Nacharbeiten
+db = DBI::dbConnect(RSQLite::SQLite(), here::here("output/fulldata_bast_clim.db"))
+fulldata_bast_clim = DBI::dbReadTable(db, "fulldata_bast_clim")
+DBI::dbDisconnect(db)
+
+eledf = fulldata_bast_clim_final |> 
+    dplyr::select(ort, baujahr, laenge, tbwnr, schad_id, x, y, max_ele) |> 
+    dplyr::distinct()
+
+joined = dplyr::left_join(
+  fulldata_bast_clim,
+  fulldata_bast_clim_final |> 
+    dplyr::select(ort, baujahr, laenge, tbwnr, schad_id, x, y, max_ele) |> 
+    dplyr::distinct(), 
+  by = c("ort", "baujahr", "laenge", "tbwnr", "schad_id", "x", "y"),
+  relationship = "many-to-one"
+) |> 
+  dplyr::select(-c(
+    "min_meanT", "mean_meanT", "max_meanT", "min_maxT", "mean_maxT", "max_maxT", 
+    "min_minT", "mean_minT", "max_minT", "min_diffT", "mean_diffT", "max_diffT", 
+    "min_TFC", "mean_TFC", "max_TFC", "min_icedays", "mean_icedays", 
+    "max_icedays", "min_summerdays", "mean_summerdays", "max_summerdays"
+  )) |> 
+  dplyr::rename(elevation = "max_ele")
+
+colnames(joined)
+
+save_dataset(joined, "output/fulldata_bast_clim_red.db")
+
+```
+
+
