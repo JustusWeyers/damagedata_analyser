@@ -439,7 +439,7 @@ setMethod("train_groups", "BSPID", function(self, model, target = NA, test_run =
       ...
     )
 
-    if (!is.null(path)) saveRDS(m, file.path(path, paste0(names(self@groups)[i], ".rds")))
+    if (!is.null(path)) saveRDS(m, file.path(path, paste0("checkpoint_group_", names(self@groups)[i], ".rds")))
 
     m
   })
